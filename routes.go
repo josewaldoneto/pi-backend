@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"projeto-integrador/handlers"
+	"projeto-integrador/utilities"
 	"strings"
 
 	gorillahandlers "github.com/gorilla/handlers"
@@ -13,7 +14,7 @@ import (
 
 func LoadRoutes() {
 	// Inicializar o sistema de logs
-	handlers.InitLogger()
+	utilities.InitLogger()
 
 	r := mux.NewRouter()
 
@@ -22,9 +23,9 @@ func LoadRoutes() {
 
 	// Rotas públicas
 	r.HandleFunc("/register", handlers.RegisterHandler).Methods("POST")
-	r.HandleFunc("/login", handlers.LoginHandler).Methods("POST")
-	r.HandleFunc("/logout", handlers.LogoutHandler).Methods("POST")
+	// r.HandleFunc("/login", handlers.LoginHandler).Methods("POST")
 
+	r.HandleFunc("/logout", handlers.LogoutHandler).Methods("POST")
 	// Rotas protegidas
 	r.HandleFunc("/user", handlers.AuthMiddleware(handlers.UserHandler)).Methods("GET")
 	r.HandleFunc("/user", handlers.AuthMiddleware(handlers.UpdateUserHandler)).Methods("PUT")
@@ -52,6 +53,6 @@ func LoadRoutes() {
 		port = "8080" // Porta padrão se não estiver configurada
 	}
 
-	handlers.LogInfo("Servidor iniciado na porta %s", port)
+	utilities.LogInfo("Servidor iniciado na porta %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }

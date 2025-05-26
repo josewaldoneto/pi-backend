@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"net/http"
+	"projeto-integrador/utilities"
 	"time"
 )
 
@@ -23,7 +24,7 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 		duration := time.Since(start)
 
 		// Registrar a requisição
-		LogRequest(r.Method, r.URL.Path, r.RemoteAddr, rw.statusCode, duration)
+		utilities.LogRequest(r.Method, r.URL.Path, r.RemoteAddr, rw.statusCode, duration)
 	})
 }
 

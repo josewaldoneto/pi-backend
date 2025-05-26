@@ -6,15 +6,16 @@ import (
 	"net/http"
 	"projeto-integrador/database"
 	"projeto-integrador/models"
+	"projeto-integrador/utilities"
 	"time"
 )
 
 func CreateWorkspaceHandler(w http.ResponseWriter, r *http.Request) {
-	LogDebug("Iniciando criação de novo workspace")
+	utilities.LogDebug("Iniciando criação de novo workspace")
 
 	uid := r.Context().Value("userUID")
 	if uid == nil {
-		LogError(fmt.Errorf("UID não encontrado no contexto"), "Falha na autenticação")
+		utilities.LogError(fmt.Errorf("UID não encontrado no contexto"), "Falha na autenticação")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -22,27 +23,27 @@ func CreateWorkspaceHandler(w http.ResponseWriter, r *http.Request) {
 	// Decodifica o JSON recebido
 	var workspace models.Workspace
 	if err := json.NewDecoder(r.Body).Decode(&workspace); err != nil {
-		LogError(err, "Erro ao decodificar JSON do workspace")
+		utilities.LogError(err, "Erro ao decodificar JSON do workspace")
 		http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
 		return
 	}
 
 	// Validações básicas
 	if workspace.Name == "" {
-		LogError(fmt.Errorf("nome do workspace não fornecido"), "Validação falhou")
+		utilities.LogError(fmt.Errorf("nome do workspace não fornecido"), "Validação falhou")
 		http.Error(w, "Workspace name is required", http.StatusBadRequest)
 		return
 	}
 
-	LogDebug("Conectando ao banco de dados para criar workspace")
+	utilities.LogDebug("Conectando ao banco de dados para criar workspace")
 	db, err := database.ConnectPostgres()
 	if err != nil {
-		LogError(err, "Erro ao conectar ao banco de dados")
+		utilities.LogError(err, "Erro ao conectar ao banco de dados")
 		http.Error(w, "Database connection error", http.StatusInternalServerError)
 		return
 	}
 
-	LogDebug("Inserindo novo workspace no banco de dados")
+	utilities.LogDebug("Inserindo novo workspace no banco de dados")
 	query := `
 		INSERT INTO workspaces (name, description, is_public, owner_uid, created_at)
 		VALUES ($1, $2, $3, $4, NOW())
@@ -59,7 +60,7 @@ func CreateWorkspaceHandler(w http.ResponseWriter, r *http.Request) {
 	).Scan(&workspace.ID, &createdAt)
 
 	if err != nil {
-		LogError(err, "Erro ao criar workspace no banco de dados")
+		utilities.LogError(err, "Erro ao criar workspace no banco de dados")
 		http.Error(w, "Database error while creating workspace", http.StatusInternalServerError)
 		return
 	}
@@ -68,19 +69,19 @@ func CreateWorkspaceHandler(w http.ResponseWriter, r *http.Request) {
 	workspace.CreatedAt = createdAt
 	workspace.Members = 1 // Criador é o primeiro membro
 
-	LogDebug("Adicionando criador como admin do workspace")
+	utilities.LogDebug("Adicionando criador como admin do workspace")
 	_, err = db.Exec(`
 		INSERT INTO user_workspace (workspace_id, user_id, role, joined_at)
 		VALUES ($1, $2, 'admin', NOW())
 	`, workspace.ID, uid)
 
 	if err != nil {
-		LogError(err, "Erro ao adicionar usuário ao workspace")
+		utilities.LogError(err, "Erro ao adicionar usuário ao workspace")
 		http.Error(w, "Database error while adding user to workspace", http.StatusInternalServerError)
 		return
 	}
 
-	LogInfo("Workspace criado com sucesso: %s (ID: %d)", workspace.Name, workspace.ID)
+	utilities.LogInfo("Workspace criado com sucesso: %s (ID: %d)", workspace.Name, workspace.ID)
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(workspace)
 }
