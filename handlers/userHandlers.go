@@ -321,10 +321,39 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "Failed to save user in database", http.StatusInternalServerError)
 			return
 		}
+		// 4. Criar Workspace Privado
+		// A função CreatePrivateWorkspace agora retorna (*Workspace, error)
+		// Usaremos a variável 'db' que já está aberta.
+		errWorkspace := models.CreatePrivateWorkspace(db, firebaseUser.UID)
+		if errWorkspace != nil {
+			utilities.LogError(errWorkspace, "Falha ao criar workspace privado para o usuário "+firebaseUser.UID)
+
+			// Iniciar Rollback:
+			// a. Deletar usuário do PostgreSQL
+			utilities.LogInfo("Tentando reverter inserção do usuário no PostgreSQL UID: %s", firebaseUser.UID)
+			_, dbDeleteErr := db.Exec("DELETE FROM users WHERE firebase_uid = $1", firebaseUser.UID)
+			if dbDeleteErr != nil {
+				utilities.LogError(dbDeleteErr, "Falha CRÍTICA ao tentar reverter inserção do usuário no PostgreSQL UID: "+firebaseUser.UID)
+				// O usuário pode permanecer no DB e no Firebase, mas sem workspace.
+			} else {
+				utilities.LogInfo("Usuário removido do PostgreSQL com sucesso (Rollback): %s", firebaseUser.UID)
+			}
+
+			// b. Deletar usuário do Firebase
+			utilities.LogInfo("Tentando reverter criação do usuário no Firebase UID: %s", firebaseUser.UID)
+			if delErr := firebase.DeleteUser(firebaseUser.UID); delErr != nil {
+				utilities.LogError(delErr, "Falha CRÍTICA ao tentar reverter criação do usuário no Firebase UID: "+firebaseUser.UID)
+				// O usuário pode permanecer no Firebase, mesmo que tenha sido removido do DB local.
+			} else {
+				utilities.LogInfo("Usuário removido do Firebase com sucesso (Rollback): %s", firebaseUser.UID)
+			}
+
+			http.Error(w, "Erro interno do servidor ao finalizar configuração do usuário", http.StatusInternalServerError)
+			return // Interrompe o fluxo de registro
+		}
+		utilities.LogInfo("Workspace privado criado com sucesso para Firebase UID: %s", firebaseUser.UID)
+
 		defer db.Close()
-
-		models.CreatePrivateWorkspace(db, firebaseUser.UID)
-
 		// Gerar Custom Token para o Frontend
 		customToken, tokenErr := authClient.CustomToken(ctx, firebaseUser.UID)
 		if tokenErr != nil {

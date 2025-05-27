@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -43,7 +44,7 @@ type WorkspaceMember struct {
 	JoinedAt    time.Time `json:"joined_at"`
 }
 
-func CreatePrivateWorkspace(db *sql.DB, ownerUID string) (*Workspace, error) {
+func CreatePrivateWorkspace(db *sql.DB, ownerUID string) error {
 	// Verifica se já existe um workspace privado para esse usuário
 	var existingID int64
 	err := db.QueryRow(`
@@ -51,18 +52,18 @@ func CreatePrivateWorkspace(db *sql.DB, ownerUID string) (*Workspace, error) {
 	`, ownerUID).Scan(&existingID)
 
 	if err != nil && err != sql.ErrNoRows {
-		return nil, err // Erro de banco real
+		return err // Erro de banco real
 	}
 
 	if err == nil {
 		// Já existe um workspace privado
-		return nil, errors.New("private workspace already exists")
+		return errors.New("private workspace already exists")
 	}
 
 	// Inicia uma transação
 	tx, err := db.Begin()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer func() {
 		// Rollback se a transação ainda estiver aberta (em caso de erro)
@@ -78,13 +79,22 @@ func CreatePrivateWorkspace(db *sql.DB, ownerUID string) (*Workspace, error) {
 
 	// Cria o workspace privado
 	query := `
-	INSERT INTO workspaces (name, description, is_public, owner_uid, created_at)
-	VALUES ($1, $2, false, $3, NOW())
-	RETURNING id, created_at
-	`
+				INSERT INTO workspaces (name, description, is_public, owner_uid, created_at)
+				VALUES ($1, $2, false, $3, NOW())
+				RETURNING id, created_at
+				`
 
 	name := ownerUID
 	description := "Personal workspace"
+	// Passo Adicional: Obter o ID numérico do usuário da tabela 'users'
+	var userID int64 // Ou o tipo correspondente ao users.id (SERIAL geralmente mapeia para int64 em Go)
+	// ownerUID aqui é o firebase_uid (string)
+	err = tx.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", ownerUID).Scan(&userID)
+	if err != nil {
+		log.Printf("Falha ao encontrar ID do usuário na tabela 'users' para firebase_uid %s: %v", ownerUID, err)
+		// Este erro é crítico para a lógica de adicionar membro, então a transação deve ser revertida.
+		return fmt.Errorf("usuário correspondente ao owner_uid (%s) não encontrado na tabela 'users': %w", ownerUID, err)
+	}
 
 	var workspace Workspace
 	var createdAt time.Time
@@ -96,7 +106,7 @@ func CreatePrivateWorkspace(db *sql.DB, ownerUID string) (*Workspace, error) {
 	).Scan(&workspace.ID, &createdAt)
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	workspace.Name = name
@@ -106,17 +116,17 @@ func CreatePrivateWorkspace(db *sql.DB, ownerUID string) (*Workspace, error) {
 	workspace.CreatedAt = createdAt
 	workspace.Members = 1
 
-	// Adiciona o dono como admin na tabela user_workspace
+	// Adiciona o dono como admin na tabela workspace_members
 	_, err = tx.Exec(`
-		INSERT INTO user_workspace (workspace_id, user_id, role, joined_at)
+		INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
 		VALUES ($1, $2, 'admin', NOW())
-		`, workspace.ID, ownerUID)
+		`, workspace.ID, userID)
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &workspace, nil
+	return nil
 }
 
 func ListWorkspaceMembers(db *sql.DB, workspaceID int64) ([]WorkspaceMember, error) {
