@@ -29,15 +29,18 @@ type WorkspaceInvite struct {
 }
 
 // Relação Usuário → Workspace
+
 type UserWorkspace struct {
 	WorkspaceID int64     `json:"workspace_id"`
-	UserID      string    `json:"user_id"` // Firebase UID
+	UserID      int64     `json:"user_id"` // Alterado para int64 para corresponder a users.id
 	Role        string    `json:"role"`
 	JoinedAt    time.Time `json:"joined_at"`
 }
 
+// ...
+
 type WorkspaceMember struct {
-	UserID      string    `json:"user_id"`
+	UserID      string    `json:"user_id"` // Alterado para int64 para corresponder a users.id
 	DisplayName string    `json:"display_name"`
 	Email       string    `json:"email"`
 	Role        string    `json:"role"`
@@ -131,24 +134,22 @@ func CreatePrivateWorkspace(db *sql.DB, ownerUID string) error {
 
 func ListWorkspaceMembers(db *sql.DB, workspaceID int64) ([]WorkspaceMember, error) {
 	query := `
-		SELECT uw.user_id, u.display_name, u.email, uw.role, uw.joined_at
-		FROM user_workspace uw
-		JOIN users u ON uw.user_id = u.firebase_uid
-		WHERE uw.workspace_id = $1
-	`
-
+        SELECT u.firebase_uid, u.display_name, u.email, wm.role, wm.joined_at
+        FROM workspace_members wm  -- Usando workspace_members consistentemente
+        JOIN users u ON wm.user_id = u.id -- JOIN com users.id (inteiro)
+        WHERE wm.workspace_id = $1
+    `
 	rows, err := db.Query(query, workspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch workspace members: %w", err)
+		return nil, fmt.Errorf("falha ao buscar membros do workspace: %w", err)
 	}
 	defer rows.Close()
 
 	var members []WorkspaceMember
-
 	for rows.Next() {
-		var member WorkspaceMember
+		var member WorkspaceMember // WorkspaceMember.UserID é string (para firebase_uid)
 		err := rows.Scan(
-			&member.UserID,
+			&member.UserID, // Vai receber u.firebase_uid
 			&member.DisplayName,
 			&member.Email,
 			&member.Role,
@@ -159,11 +160,7 @@ func ListWorkspaceMembers(db *sql.DB, workspaceID int64) ([]WorkspaceMember, err
 		}
 		members = append(members, member)
 	}
-
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
+	// ... (resto da função)
 	return members, nil
 }
 
@@ -245,65 +242,84 @@ func DeleteWorkspace(db *sql.DB, workspaceID int64, ownerUID string) error {
 	return nil
 }
 
-func AddUserToWorkspace(db *sql.DB, workspaceID int64, userID string, role string) error {
-	// Validações simples
+func AddUserToWorkspace(db *sql.DB, workspaceID int64, userFirebaseUID string, role string) error {
 	if role == "" {
 		role = "member"
 	}
 
-	// Executa a inserção
-	_, err := db.Exec(`
-		INSERT INTO user_workspace (workspace_id, user_id, role, joined_at)
-		VALUES ($1, $2, $3, NOW())
-	`, workspaceID, userID, role)
-
-	// Verifica erro de chave duplicada (usuário já está no workspace)
+	var localUserID int64
+	err := db.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", userFirebaseUID).Scan(&localUserID)
 	if err != nil {
-		// Pode melhorar esse tratamento dependendo do driver do banco
-		if strings.Contains(err.Error(), "duplicate key") {
-			return fmt.Errorf("user %s is already a member of workspace %d", userID, workspaceID)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("usuário com Firebase UID %s não encontrado", userFirebaseUID)
 		}
-		return err
+		return fmt.Errorf("erro ao buscar ID do usuário: %w", err)
 	}
 
+	_, err = db.Exec(`
+        INSERT INTO workspace_members (workspace_id, user_id, role, joined_at)
+        VALUES ($1, $2, $3, NOW())
+    `, workspaceID, localUserID, role) // Usa localUserID (inteiro)
+
+	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "violates unique constraint") {
+			return fmt.Errorf("usuário (Firebase UID: %s) já é membro do workspace %d", userFirebaseUID, workspaceID)
+		}
+		return fmt.Errorf("falha ao adicionar usuário ao workspace: %w", err)
+	}
 	return nil
 }
 
-func RemoveUserFromWorkspace(db *sql.DB, workspaceID int64, userID string) error {
-	// Executa a deleção
-	result, err := db.Exec(`
-		DELETE FROM user_workspace
-		WHERE workspace_id = $1 AND user_id = $2
-	`, workspaceID, userID)
-
+func RemoveUserFromWorkspace(db *sql.DB, workspaceID int64, userFirebaseUID string) error {
+	var localUserID int64
+	err := db.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", userFirebaseUID).Scan(&localUserID)
 	if err != nil {
-		return fmt.Errorf("failed to remove user from workspace: %w", err)
+		if err == sql.ErrNoRows {
+			// Usuário não existe, então não pode ser membro. Pode tratar como sucesso ou erro específico.
+			return errors.New("usuário não encontrado no sistema para remoção do workspace")
+		}
+		return fmt.Errorf("erro ao buscar ID do usuário para remoção: %w", err)
 	}
 
+	result, err := db.Exec(`
+        DELETE FROM workspace_members
+        WHERE workspace_id = $1 AND user_id = $2
+    `, workspaceID, localUserID) // Usa localUserID (inteiro)
+	// ... (resto da função, checagem de rowsAffected)
+	if err != nil {
+		return fmt.Errorf("falha ao remover usuário do workspace: %w", err)
+	}
 	rowsAffected, err := result.RowsAffected()
 	if err != nil {
 		return err
 	}
-
 	if rowsAffected == 0 {
-		return errors.New("user not found in workspace")
+		return errors.New("usuário não encontrado no workspace ou já removido")
 	}
-
 	return nil
 }
 
-func IsWorkspaceMember(db *sql.DB, uid string, workspaceID int64) (bool, error) {
-	var exists bool
-	err := db.QueryRow(`
-		SELECT EXISTS(
-			SELECT 1 FROM user_workspace
-			WHERE user_id = $1 AND workspace_id = $2
-		)
-	`, uid, workspaceID).Scan(&exists)
-
+func IsWorkspaceMember(db *sql.DB, userFirebaseUID string, workspaceID int64) (bool, error) {
+	var localUserID int64
+	err := db.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", userFirebaseUID).Scan(&localUserID)
 	if err != nil {
-		return false, fmt.Errorf("failed to check workspace membership: %w", err)
+		if err == sql.ErrNoRows {
+			return false, nil // Usuário não existe no sistema, logo não é membro
+		}
+		return false, fmt.Errorf("erro ao buscar ID do usuário para checar membresia: %w", err)
 	}
 
+	var exists bool
+	err = db.QueryRow(`
+        SELECT EXISTS(
+            SELECT 1 FROM workspace_members
+            WHERE user_id = $1 AND workspace_id = $2
+        )
+    `, localUserID, workspaceID).Scan(&exists) // Usa localUserID (inteiro)
+
+	// ... (resto da função)
+	if err != nil {
+		return false, fmt.Errorf("falha ao checar se usuário é membro do workspace: %w", err)
+	}
 	return exists, nil
 }
