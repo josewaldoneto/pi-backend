@@ -29,19 +29,24 @@ CREATE TABLE workspace_members (
     PRIMARY KEY (workspace_id, user_id)
 );
 
--- Tabela de tarefas
 CREATE TABLE tarefas (
-    id SERIAL PRIMARY KEY,
-    title VARCHAR(255) NOT NULL,
-    conteudo TEXT,
-    prioridade VARCHAR(50) CHECK (prioridade IN ('low', 'medium', 'high')),
-    status VARCHAR(50) CHECK (status IN ('pending', 'in_progress', 'completed')),
-    expiracao TIMESTAMP,
-    criado_por INTEGER REFERENCES users(id),
-    workspace_id INTEGER REFERENCES workspaces(id) ON DELETE CASCADE,
+    id SERIAL PRIMARY KEY,                          -- ID interno único no PostgreSQL
+    firestore_doc_id VARCHAR(128) UNIQUE NOT NULL,  -- ID do documento correspondente no Firestore (essencial para o link)
+    workspace_id INTEGER NOT NULL,                  -- ID do workspace ao qual a tarefa pertence
+    criado_por INTEGER NOT NULL,                    -- ID do usuário (da tabela 'users') que criou a tarefa
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+    FOREIGN KEY (criado_por) REFERENCES users(id) ON DELETE RESTRICT -- Ou ON DELETE SET NULL/CASCADE dependendo da sua lógica de negócio
 );
+
+-- Índice para a nova coluna
+CREATE INDEX idx_tarefas_firestore_doc_id ON tarefas(firestore_doc_id);
+-- Índices existentes que ainda são relevantes (se você não deu DROP TABLE)
+-- Se você deu DROP TABLE, precisa recriá-los para a nova estrutura:
+CREATE INDEX idx_tarefas_workspace ON tarefas(workspace_id);
+CREATE INDEX idx_tarefas_criado_por ON tarefas(criado_por);
 
 -- Índices para melhor performance
 CREATE INDEX idx_users_firebase_uid ON users(firebase_uid);
