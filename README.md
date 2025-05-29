@@ -1,8 +1,3 @@
-Certo! Entendi que você quer que toda a documentação da API que detalhamos na resposta anterior (com todas as rotas de usuários, workspaces e tarefas, exemplos de requisição/resposta, etc.) seja o conteúdo final do seu arquivo `README.md`.
-
-Aqui está o conteúdo completo para o seu `README.md`, revisado e atualizado conforme todas as nossas discussões:
-
-```markdown
 # API de Gerenciamento de Usuários, Tarefas e Workspaces
 
 Este é um guia rápido para testar as APIs do sistema usando o Postman ou similar.
