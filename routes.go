@@ -50,6 +50,19 @@ func LoadRoutes() {
 	r.HandleFunc("/workspace/{workspace_id}/task/update/{task_doc_id}", handlers.AuthMiddleware(handlers.UpdateTaskHandler)).Methods("PUT")    //ok
 	r.HandleFunc("/workspace/{workspace_id}/task/delete/{task_doc_id}", handlers.AuthMiddleware(handlers.DeleteTaskHandler)).Methods("DELETE") //ok
 
+	// --- Rotas para Funcionalidades de IA (protegidas) ---
+	// (Assumindo que você quer um prefixo /ai/ para essas rotas)
+	r.HandleFunc("/ai/code-review", handlers.AuthMiddleware(handlers.CodeReviewAIHandler)).Methods("POST")
+	r.HandleFunc("/ai/summarize-text", handlers.AuthMiddleware(handlers.SummarizeTextAIHandler)).Methods("POST")
+	r.HandleFunc("/ai/mindmap-ideas", handlers.AuthMiddleware(handlers.GenerateMindMapIdeasAIHandler)).Methods("POST")
+	// Para o assistente de tasks, que pode ser específico de um workspace:
+	// Opção A: Sem workspace_id na rota, mas enviado no corpo (como no handler acima)
+	r.HandleFunc("/ai/task-assistant", handlers.AuthMiddleware(handlers.WorkspaceTaskAssistantHandler)).Methods("POST")
+	// Opção B: Com workspace_id na rota (handler precisaria ser ajustado para ler da rota e do corpo)
+	// r.HandleFunc("/workspace/{workspace_id}/ai/task-assistant", handlers.AuthMiddleware(handlers.WorkspaceTaskAssistantHandler)).Methods("POST")
+
+	// ... (resto do seu routes.go) ...
+
 	// Configuração do CORS
 	headers := gorillahandlers.AllowedHeaders([]string{"X-Requested-With", "Content-Type", "Authorization"})
 	methods := gorillahandlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
