@@ -1,399 +1,443 @@
 package handlers
 
 import (
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"projeto-integrador/database"
+	"projeto-integrador/firebase"
+	"projeto-integrador/models"
+	"projeto-integrador/utilities"
 	"strconv"
 	"strings"
 	"time"
 
-	"projeto-integrador/database"
-	"projeto-integrador/models"
-	"projeto-integrador/utilities"
-
+	"cloud.google.com/go/firestore" // Para firestore.ServerTimestamp se usado
+	"github.com/google/uuid"        // Para gerar IDs únicos para o Firestore
 	"github.com/gorilla/mux"
 )
 
-// createTaskHandler cria uma nova tarefa em um workspace
-func createTaskHandler(w http.ResponseWriter, r *http.Request) {
-	utilities.LogDebug("Iniciando criação de nova tarefa")
+const tasksSubCollection = "tasks" // Nome da subcoleção de tarefas no Firestore
 
+// CreateTaskHandler cria uma nova tarefa dentro de um workspace
+func CreateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	workspaceID := vars["id"]
+	workspaceIDStr, ok := vars["workspace_id"]
+	if !ok {
+		utilities.LogError(fmt.Errorf("workspace_id não encontrado"), "CreateTaskHandler: Parâmetro ausente")
+		http.Error(w, "Workspace ID is required", http.StatusBadRequest)
+		return
+	}
+	workspaceID, err := strconv.ParseInt(workspaceIDStr, 10, 64)
+	if err != nil {
+		utilities.LogError(err, "CreateTaskHandler: workspace_id inválido")
+		http.Error(w, "Invalid Workspace ID format", http.StatusBadRequest)
+		return
+	}
 
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := context.Background()
+
+	var input models.CreateTaskInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		utilities.LogError(err, "CreateTaskHandler: Erro ao decodificar JSON")
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if input.Title == "" {
+		http.Error(w, "Task title is required", http.StatusBadRequest)
+		return
+	}
+	if input.Status == "" { // Definir um status padrão se não fornecido
+		input.Status = "pending"
+	}
+
+	// Conectar ao PostgreSQL
 	db, err := database.ConnectPostgres()
-	// Obter UID do usuário a partir do token Firebase
-	// uid, err := getUIDFromToken(r)
 	if err != nil {
-		utilities.LogError(err, "Falha na autenticação ao criar tarefa")
-		http.Error(w, "Não autorizado", http.StatusUnauthorized)
+		utilities.LogError(err, "CreateTaskHandler: Erro ao conectar ao PG")
+		http.Error(w, "Database connection error", http.StatusInternalServerError)
 		return
 	}
+	defer db.Close()
 
-	// // Verificar se o usuário é membro do workspace
-	// isMember, err := isWorkspaceMember(uid, workspaceID)
-	// if err != nil || !isMember {
-	// 	utilities.LogError(err, "Usuário não tem permissão para criar tarefa no workspace")
-	// 	http.Error(w, "Acesso não autorizado ao workspace", http.StatusForbidden)
-	// 	return
-	// }
-
-	var task struct {
-		Title      string    `json:"title"`
-		Content    string    `json:"content"`
-		Priority   string    `json:"priority"`
-		Status     string    `json:"status"`
-		Expiration time.Time `json:"expiration"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&task); err != nil {
-		utilities.LogError(err, "Erro ao decodificar JSON da tarefa")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	// Validar prioridade
-	validPriorities := map[string]bool{"low": true, "medium": true, "high": true}
-	if !validPriorities[task.Priority] {
-		utilities.LogError(fmt.Errorf("prioridade inválida: %s", task.Priority), "Validação falhou")
-		http.Error(w, "Prioridade inválida", http.StatusBadRequest)
-		return
-	}
-
-	// Validar status
-	validStatuses := map[string]bool{"pending": true, "in_progress": true, "completed": true}
-	if task.Status != "" && !validStatuses[task.Status] {
-		utilities.LogError(fmt.Errorf("status inválido: %s", task.Status), "Validação falhou")
-		http.Error(w, "Status inválido", http.StatusBadRequest)
-		return
-	}
-
-	// Obter ID do usuário
-	var userID int
-	// err = db.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", uid).Scan(&userID)
+	// Autorização: Verificar se o usuário é membro do workspace
+	isMember, err := models.IsWorkspaceMember(db, requestingUserFirebaseUID, workspaceID)
 	if err != nil {
-		utilities.LogError(err, "Erro ao obter ID do usuário")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utilities.LogError(err, "CreateTaskHandler: Erro ao verificar membresia")
+		http.Error(w, "Failed to verify workspace membership", http.StatusInternalServerError)
+		return
+	}
+	if !isMember {
+		utilities.LogInfo(fmt.Sprintf("CreateTaskHandler: Usuário %s não autorizado no workspace %d", requestingUserFirebaseUID, workspaceID))
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
-	utilities.LogDebug("Inserindo nova tarefa no banco de dados")
-	query := `INSERT INTO tarefas (title, conteudo, prioridade, status, expiracao, criado_por, workspace_id)
-              VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`
-	var id int
-	err = db.QueryRow(query,
-		task.Title,
-		task.Content,
-		task.Priority,
-		task.Status,
-		task.Expiration,
-		userID,
-		workspaceID,
-	).Scan(&id)
+	// Obter o users.id (inteiro) do criador para o stub PG
+	var creatorUserIDPg int64
+	err = db.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", requestingUserFirebaseUID).Scan(&creatorUserIDPg)
 	if err != nil {
-		utilities.LogError(err, "Erro ao inserir tarefa no banco de dados")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utilities.LogError(err, "CreateTaskHandler: Usuário criador não encontrado no PG")
+		http.Error(w, "Authenticated user not found in database", http.StatusInternalServerError)
 		return
 	}
 
-	utilities.LogInfo("Tarefa criada com sucesso: %s (ID: %d)", task.Title, id)
-	response := map[string]int{"id": id}
-	json.NewEncoder(w).Encode(response)
+	// 1. Criar documento no Firestore
+	firestoreDocID := uuid.New().String() // Gerar um ID único para o documento Firestore
+	taskDetails := models.TaskDetailsFirestore{
+		Title:              input.Title,
+		Description:        input.Description,
+		Status:             input.Status,
+		Priority:           input.Priority,
+		ExpirationDate:     input.ExpirationDate,
+		Attachment:         input.Attachment, // Assume que o cliente já fez upload e está enviando metadados
+		WorkspaceIDPg:      workspaceID,
+		CreatorFirebaseUID: requestingUserFirebaseUID,
+		CreatedAt:          time.Now(), // Ou use firestore.ServerTimestamp se a struct suportar
+		LastUpdatedAt:      time.Now(), // Ou use firestore.ServerTimestamp
+	}
+
+	// O caminho no Firestore será /workspaces/{postgres_workspace_id}/tasks/{firestore_task_doc_id}
+	// Nota: {postgres_workspace_id} precisa ser uma string no caminho do Firestore.
+	workspaceDocIDForFirestore := strconv.FormatInt(workspaceID, 10)
+	firestoreClient, err := firebase.GetFirestoreClient() // Função que retorna o cliente Firestore
+	if err != nil {
+		utilities.LogError(err, "CreateTaskHandler: Erro ao obter cliente Firestore")
+		http.Error(w, "Failed to connect to Firestore", http.StatusInternalServerError)
+		return
+	}
+	_, err = firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Doc(firestoreDocID).Set(ctx, taskDetails)
+	if err != nil {
+		utilities.LogError(err, "CreateTaskHandler: Erro ao criar tarefa no Firestore")
+		http.Error(w, "Failed to create task details", http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Criar stub no PostgreSQL
+	taskStub := models.TarefaStub{
+		FirestoreDocID: firestoreDocID,
+		WorkspaceID:    workspaceID,
+		CriadoPor:      creatorUserIDPg,
+		// CreatedAt e UpdatedAt terão default no PG
+	}
+	_, err = db.Exec(`INSERT INTO tarefas (firestore_doc_id, workspace_id, criado_por) VALUES ($1, $2, $3)`,
+		taskStub.FirestoreDocID, taskStub.WorkspaceID, taskStub.CriadoPor)
+	if err != nil {
+		utilities.LogError(err, "CreateTaskHandler: Erro ao criar stub da tarefa no PG")
+		// Tentar reverter a criação no Firestore (lógica de compensação)
+		_, delErr := firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Doc(firestoreDocID).Delete(ctx)
+		if delErr != nil {
+			utilities.LogError(delErr, "CreateTaskHandler: FALHA AO REVERTER criação no Firestore após erro no PG")
+		}
+		http.Error(w, "Failed to create task record", http.StatusInternalServerError)
+		return
+	}
+
+	// Retornar os detalhes completos da tarefa (do Firestore) ou apenas uma confirmação
+	// Para consistência, vamos buscar do Firestore o que foi salvo
+	createdTaskDoc, err := firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Doc(firestoreDocID).Get(ctx)
+	if err != nil {
+		utilities.LogError(err, "CreateTaskHandler: Erro ao buscar tarefa recém-criada do Firestore para resposta")
+		// Ainda assim, a criação foi um sucesso, então podemos retornar 201 sem o corpo completo
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Task created successfully", "firestoreDocId": firestoreDocID})
+		return
+	}
+
+	var finalTaskData models.TaskDetailsFirestore
+	createdTaskDoc.DataTo(&finalTaskData)
+
+	utilities.LogInfo(fmt.Sprintf("CreateTaskHandler: Tarefa %s criada no workspace %d", firestoreDocID, workspaceID))
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(finalTaskData)
 }
 
-// getTasksHandler lista todas as tarefas de um workspace
-func getTasksHandler(w http.ResponseWriter, r *http.Request) {
-	utilities.LogDebug("Iniciando listagem de tarefas")
-
+// ListTasksHandler lista todas as tarefas de um workspace (buscando do Firestore)
+func ListTasksHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	workspaceID := vars["id"]
-	db, err := database.ConnectPostgres()
-
+	workspaceIDStr, ok := vars["workspace_id"]
+	if !ok {
+		http.Error(w, "Workspace ID is required", http.StatusBadRequest)
+		return
+	}
+	workspaceID, err := strconv.ParseInt(workspaceIDStr, 10, 64)
 	if err != nil {
-		utilities.LogError(err, "Falha na autenticação ao listar tarefas")
-		http.Error(w, "Não autorizado", http.StatusUnauthorized)
+		http.Error(w, "Invalid Workspace ID format", http.StatusBadRequest)
 		return
 	}
 
-	// // Verificar se o usuário é membro do workspace
-	// if err != nil || !isMember {
-	// 	utilities.LogError(err, "Usuário não tem permissão para listar tarefas do workspace")
-	// 	http.Error(w, "Acesso não autorizado ao workspace", http.StatusForbidden)
-	// 	return
-	// }
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := context.Background()
 
-	// Obter parâmetros de query para filtragem
-	queryParams := r.URL.Query()
-	statusFilter := queryParams.Get("status")
-	priorityFilter := queryParams.Get("priority")
-
-	utilities.LogDebug("Buscando tarefas com filtros - status: %s, prioridade: %s", statusFilter, priorityFilter)
-
-	// Construir query base
-	query := `
-        SELECT t.id, t.title, t.conteudo, t.prioridade, t.status, t.expiracao,
-               t.criado_por, t.workspace_id, t.created_at, u.username
-        FROM tarefas t
-        JOIN users u ON t.criado_por = u.id
-        WHERE t.workspace_id = $1
-    `
-	params := []interface{}{workspaceID}
-	paramCount := 2
-
-	// Adicionar filtros
-	if statusFilter != "" {
-		query += fmt.Sprintf(" AND t.status = $%d", paramCount)
-		params = append(params, statusFilter)
-		paramCount++
-	}
-
-	if priorityFilter != "" {
-		query += fmt.Sprintf(" AND t.prioridade = $%d", paramCount)
-		params = append(params, priorityFilter)
-		paramCount++
-	}
-
-	query += " ORDER BY t.created_at DESC"
-
-	rows, err := db.Query(query, params...)
+	db, err := database.ConnectPostgres() // Necessário para checar membresia
 	if err != nil {
-		utilities.LogError(err, "Erro ao buscar tarefas no banco de dados")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utilities.LogError(err, "ListTasksHandler: Erro ao conectar ao PG")
+		http.Error(w, "Database connection error", http.StatusInternalServerError)
 		return
 	}
-	defer rows.Close()
+	defer db.Close()
 
-	tasks := []map[string]interface{}{}
-	for rows.Next() {
-		var task models.Task
-		var createdByUsername string
-		var expiration sql.NullTime
+	isMember, err := models.IsWorkspaceMember(db, requestingUserFirebaseUID, workspaceID)
+	if err != nil || !isMember {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
 
-		err := rows.Scan(
-			&task.ID, &task.Title, &task.Content, &task.Priority, &task.Status,
-			&expiration, &task.CreatedBy, &task.WorkspaceID, &task.CreatedAt,
-			&createdByUsername,
-		)
+	firestoreClient, err := firebase.GetFirestoreClient() // Função que retorna o cliente Firestore
+	if err != nil {
+		utilities.LogError(err, "ListTasksHandler: Erro ao obter cliente Firestore")
+		http.Error(w, "Failed to connect to Firestore", http.StatusInternalServerError)
+		return
+	}
+
+	workspaceDocIDForFirestore := strconv.FormatInt(workspaceID, 10)
+	iter := firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Documents(ctx)
+	defer iter.Stop()
+
+	var tasks []map[string]interface{} // Usando map para flexibilidade ou defina uma struct de resposta
+	for {
+		doc, err := iter.Next()
 		if err != nil {
-			utilities.LogError(err, "Erro ao ler resultado da query de tarefas")
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			// TODO: Melhorar tratamento de erro do iter.Next() (ex: iterator.Done)
+			if err.Error() == "EOF" || strings.Contains(err.Error(), "iterator done") { // Adaptar para o erro correto de fim de iteração
+				break
+			}
+			utilities.LogError(err, "ListTasksHandler: Erro ao iterar tarefas do Firestore")
+			http.Error(w, "Failed to retrieve tasks", http.StatusInternalServerError)
 			return
 		}
-
-		taskMap := map[string]interface{}{
-			"id":           task.ID,
-			"title":        task.Title,
-			"content":      task.Content,
-			"priority":     task.Priority,
-			"status":       task.Status,
-			"created_by":   createdByUsername,
-			"workspace_id": task.WorkspaceID,
-			"created_at":   task.CreatedAt,
-		}
-
-		if expiration.Valid {
-			taskMap["expiration"] = expiration.Time
-		}
-
-		tasks = append(tasks, taskMap)
+		taskData := doc.Data()
+		taskData["id"] = doc.Ref.ID // Adiciona o ID do documento Firestore aos dados
+		tasks = append(tasks, taskData)
 	}
 
-	utilities.LogInfo("Tarefas listadas com sucesso - total: %d", len(tasks))
+	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(tasks)
 }
 
-// updateTaskHandler atualiza uma tarefa existente
-func updateTaskHandler(w http.ResponseWriter, r *http.Request) {
-	utilities.LogDebug("Iniciando atualização de tarefa")
-
+// GetTaskHandler busca os detalhes de uma tarefa específica do Firestore
+func GetTaskHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	taskID := vars["id"]
+	workspaceIDStr, _ := vars["workspace_id"]
+	taskDocID, ok := vars["task_doc_id"]
+	if !ok {
+		http.Error(w, "Task Document ID is required", http.StatusBadRequest)
+		return
+	}
+	workspaceID, _ := strconv.ParseInt(workspaceIDStr, 10, 64) // Erro já tratado em Listar, mas bom ter aqui também
+
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := context.Background()
+
 	db, err := database.ConnectPostgres()
+	if err != nil { /* ... erro PG ... */
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
 
+	isMember, err := models.IsWorkspaceMember(db, requestingUserFirebaseUID, workspaceID)
+	if err != nil || !isMember {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	firestoreClient, err := firebase.GetFirestoreClient() // Função que retorna o cliente Firestore
 	if err != nil {
-		utilities.LogError(err, "Falha na autenticação ao atualizar tarefa")
-		http.Error(w, "Não autorizado", http.StatusUnauthorized)
+		utilities.LogError(err, "GetTaskHandler: Erro ao obter cliente Firestore")
+		http.Error(w, "Failed to connect to Firestore", http.StatusInternalServerError)
 		return
 	}
 
-	// Verificar se o usuário é o criador da tarefa ou membro admin do workspace
-	// // canEdit, err := canEditTask(uid, taskID)
-	// if err != nil || !canEdit {
-	// 	utilities.LogError(err, "Usuário não tem permissão para editar a tarefa")
-	// 	http.Error(w, "Sem permissão para editar esta tarefa", http.StatusForbidden)
-	// 	return
-	// }
-
-	var updates struct {
-		Title      *string    `json:"title"`
-		Content    *string    `json:"content"`
-		Priority   *string    `json:"priority"`
-		Status     *string    `json:"status"`
-		Expiration *time.Time `json:"expiration"`
-	}
-
-	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
-		utilities.LogError(err, "Erro ao decodificar JSON de atualização")
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	utilities.LogDebug("Construindo query de atualização para tarefa %s", taskID)
-	// Construir query dinâmica
-	query := "UPDATE tarefas SET "
-	params := []interface{}{}
-	paramCount := 1
-
-	if updates.Title != nil {
-		query += fmt.Sprintf("title = $%d, ", paramCount)
-		params = append(params, *updates.Title)
-		paramCount++
-	}
-
-	if updates.Content != nil {
-		query += fmt.Sprintf("conteudo = $%d, ", paramCount)
-		params = append(params, *updates.Content)
-		paramCount++
-	}
-
-	if updates.Priority != nil {
-		// Validar prioridade
-		validPriorities := map[string]bool{"low": true, "medium": true, "high": true}
-		if !validPriorities[*updates.Priority] {
-			utilities.LogError(fmt.Errorf("prioridade inválida: %s", *updates.Priority), "Validação falhou")
-			http.Error(w, "Prioridade inválida", http.StatusBadRequest)
-			return
-		}
-		query += fmt.Sprintf("prioridade = $%d, ", paramCount)
-		params = append(params, *updates.Priority)
-		paramCount++
-	}
-
-	if updates.Status != nil {
-		// Validar status
-		validStatuses := map[string]bool{"pending": true, "in_progress": true, "completed": true}
-		if !validStatuses[*updates.Status] {
-			utilities.LogError(fmt.Errorf("status inválido: %s", *updates.Status), "Validação falhou")
-			http.Error(w, "Status inválido", http.StatusBadRequest)
-			return
-		}
-		query += fmt.Sprintf("status = $%d, ", paramCount)
-		params = append(params, *updates.Status)
-		paramCount++
-	}
-
-	if updates.Expiration != nil {
-		query += fmt.Sprintf("expiracao = $%d, ", paramCount)
-		params = append(params, *updates.Expiration)
-		paramCount++
-	}
-
-	// Remover a vírgula final e adicionar a cláusula WHERE
-	query = strings.TrimSuffix(query, ", ") + " WHERE id = $" + strconv.Itoa(paramCount)
-	params = append(params, taskID)
-
-	_, err = db.Exec(query, params...)
+	workspaceDocIDForFirestore := strconv.FormatInt(workspaceID, 10)
+	docSnap, err := firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Doc(taskDocID).Get(ctx)
 	if err != nil {
-		utilities.LogError(err, "Erro ao atualizar tarefa no banco de dados")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// TODO: Verificar se erro é 'document not found'
+		utilities.LogError(err, "GetTaskHandler: Erro ao buscar tarefa do Firestore")
+		http.Error(w, "Task not found or error fetching", http.StatusNotFound) // Ou 500
 		return
 	}
 
-	utilities.LogInfo("Tarefa atualizada com sucesso: %s", taskID)
-	w.WriteHeader(http.StatusNoContent)
+	var taskData models.TaskDetailsFirestore
+	if err := docSnap.DataTo(&taskData); err != nil {
+		utilities.LogError(err, "GetTaskHandler: Erro ao converter dados da tarefa")
+		http.Error(w, "Error processing task data", http.StatusInternalServerError)
+		return
+	}
+
+	// Adicionar o ID do documento à resposta se não estiver na struct
+	// Se TaskDetailsFirestore não tiver um campo ID, podemos retornar um map ou uma struct de resposta:
+	response := map[string]interface{}{
+		"id":                 taskDocID,
+		"title":              taskData.Title,
+		"description":        taskData.Description,
+		"status":             taskData.Status,
+		"priority":           taskData.Priority,
+		"expirationDate":     taskData.ExpirationDate,
+		"attachment":         taskData.Attachment,
+		"creatorFirebaseUid": taskData.CreatorFirebaseUID,
+		"createdAt":          taskData.CreatedAt,
+		"lastUpdatedAt":      taskData.LastUpdatedAt,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
-// deleteTaskHandler remove uma tarefa
-func deleteTaskHandler(w http.ResponseWriter, r *http.Request) {
-	utilities.LogDebug("Iniciando exclusão de tarefa")
-
+// UpdateTaskHandler atualiza uma tarefa existente no Firestore e o stub no PG
+func UpdateTaskHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
-	taskID := vars["id"]
+	workspaceIDStr, _ := vars["workspace_id"]
+	taskDocID, ok := vars["task_doc_id"]
+	if !ok { /* ... erro ... */
+		http.Error(w, "Task ID required", http.StatusBadRequest)
+		return
+	}
+	workspaceID, _ := strconv.ParseInt(workspaceIDStr, 10, 64)
+
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := context.Background()
+
+	var input models.UpdateTaskInput
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
 	db, err := database.ConnectPostgres()
+	if err != nil { /* ... erro PG ... */
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
 
-	if err != nil {
-		utilities.LogError(err, "Falha na autenticação ao excluir tarefa")
-		http.Error(w, "Não autorizado", http.StatusUnauthorized)
+	isMember, err := models.IsWorkspaceMember(db, requestingUserFirebaseUID, workspaceID)
+	if err != nil || !isMember { // Adicionar verificação de permissão de edição (ex: criador, admin)
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
-	// // Verificar se o usuário é o criador da tarefa ou admin do workspace
-	// canDelete, err := canDeleteTask(uid, taskID)
-	// if err != nil || !canDelete {
-	// 	utilities.LogError(err, "Usuário não tem permissão para excluir a tarefa")
-	// 	http.Error(w, "Sem permissão para deletar esta tarefa", http.StatusForbidden)
-	// 	return
-	// }
+	// Construir lista de updates para o Firestore
+	// Nota: firestore.Update requer []firestore.Update. Ex: {Path: "title", Value: "Novo Título"}
+	var updates []firestore.Update
+	if input.Title != nil {
+		updates = append(updates, firestore.Update{Path: "title", Value: *input.Title})
+	}
+	if input.Description != nil {
+		updates = append(updates, firestore.Update{Path: "description", Value: *input.Description})
+	}
+	if input.Status != nil {
+		updates = append(updates, firestore.Update{Path: "status", Value: *input.Status})
+	}
+	if input.Priority != nil {
+		updates = append(updates, firestore.Update{Path: "priority", Value: *input.Priority})
+	}
+	if input.ExpirationDate != nil { // Se for para permitir desmarcar, precisa de lógica especial
+		updates = append(updates, firestore.Update{Path: "expiration_date", Value: input.ExpirationDate})
+	}
+	if input.Attachment != nil { // Atualizar anexo é mais complexo (deletar antigo do storage?)
+		updates = append(updates, firestore.Update{Path: "attachment", Value: input.Attachment})
+	}
 
-	_, err = db.Exec("DELETE FROM tarefas WHERE id = $1", taskID)
+	if len(updates) == 0 {
+		http.Error(w, "No fields to update", http.StatusBadRequest)
+		return
+	}
+	// Adicionar campos de auditoria
+	updates = append(updates, firestore.Update{Path: "last_updated_by_firebase_uid", Value: requestingUserFirebaseUID})
+	updates = append(updates, firestore.Update{Path: "last_updated_at", Value: firestore.ServerTimestamp})
+
+	firestoreClient, err := firebase.GetFirestoreClient() // Função que retorna o cliente Firestore
 	if err != nil {
-		utilities.LogError(err, "Erro ao excluir tarefa do banco de dados")
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		utilities.LogError(err, "UpdateTaskHandler: Erro ao obter cliente Firestore")
+		http.Error(w, "Failed to connect to Firestore", http.StatusInternalServerError)
 		return
 	}
 
-	utilities.LogInfo("Tarefa excluída com sucesso: %s", taskID)
+	workspaceDocIDForFirestore := strconv.FormatInt(workspaceID, 10)
+	taskRef := firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Doc(taskDocID)
+	_, err = taskRef.Update(ctx, updates)
+	if err != nil {
+		utilities.LogError(err, "UpdateTaskHandler: Erro ao atualizar tarefa no Firestore")
+		http.Error(w, "Failed to update task", http.StatusInternalServerError)
+		return
+	}
+
+	// Atualizar o updated_at no stub do PostgreSQL
+	_, err = db.Exec("UPDATE tarefas SET updated_at = NOW() WHERE firestore_doc_id = $1 AND workspace_id = $2", taskDocID, workspaceID)
+	if err != nil {
+		utilities.LogError(err, "UpdateTaskHandler: Erro ao atualizar timestamp do stub da tarefa no PG")
+		// A atualização no Firestore foi bem-sucedida, mas o stub PG não. Logar, mas não necessariamente reverter.
+	}
+
+	utilities.LogInfo(fmt.Sprintf("UpdateTaskHandler: Tarefa %s atualizada no workspace %d", taskDocID, workspaceID))
+	w.WriteHeader(http.StatusOK) // Ou retornar o documento atualizado
+	json.NewEncoder(w).Encode(map[string]string{"message": "Task updated successfully"})
+}
+
+// DeleteTaskHandler deleta uma tarefa (do Firestore e o stub do PG)
+func DeleteTaskHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	workspaceIDStr, _ := vars["workspace_id"]
+	taskDocID, ok := vars["task_doc_id"]
+	if !ok { /* ... erro ... */
+		http.Error(w, "Task ID required", http.StatusBadRequest)
+		return
+	}
+	workspaceID, _ := strconv.ParseInt(workspaceIDStr, 10, 64)
+
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := context.Background()
+
+	db, err := database.ConnectPostgres()
+	if err != nil { /* ... erro PG ... */
+		http.Error(w, "DB error", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close()
+
+	isMember, err := models.IsWorkspaceMember(db, requestingUserFirebaseUID, workspaceID)
+	if err != nil || !isMember { // Adicionar verificação de permissão de deleção (ex: criador, admin)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	firestoreClient, err := firebase.GetFirestoreClient() // Função que retorna o cliente Firestore
+
+	if err != nil {
+		utilities.LogError(err, "DeleteTaskHandler: Erro ao obter cliente Firestore")
+		http.Error(w, "Failed to connect to Firestore", http.StatusInternalServerError)
+		return
+	}
+
+	// 1. Deletar do Firestore
+	workspaceDocIDForFirestore := strconv.FormatInt(workspaceID, 10)
+	_, err = firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Doc(taskDocID).Delete(ctx)
+	if err != nil {
+		// TODO: Verificar se o erro é "not found" - nesse caso, a tarefa já pode ter sido deletada.
+		utilities.LogError(err, "DeleteTaskHandler: Erro ao deletar tarefa do Firestore")
+		http.Error(w, "Failed to delete task from primary store", http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Deletar stub do PostgreSQL
+	result, err := db.Exec("DELETE FROM tarefas WHERE firestore_doc_id = $1 AND workspace_id = $2", taskDocID, workspaceID)
+	if err != nil {
+		utilities.LogError(err, "DeleteTaskHandler: Erro ao deletar stub da tarefa do PG")
+		// Firestore foi deletado, mas PG não. Logar para reconciliação manual.
+		http.Error(w, "Task deleted from primary store, but failed to delete record", http.StatusInternalServerError) // Ou 200 com aviso
+		return
+	}
+	rowsAffected, _ := result.RowsAffected()
+	if rowsAffected == 0 {
+		utilities.LogInfo(fmt.Sprintf("DeleteTaskHandler: Stub da tarefa %s não encontrado no PG para workspace %d (ou já deletado)", taskDocID, workspaceID))
+		// Isso pode ser OK se o Firestore foi a fonte principal da deleção.
+	}
+
+	utilities.LogInfo(fmt.Sprintf("DeleteTaskHandler: Tarefa %s deletada do workspace %d", taskDocID, workspaceID))
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// Funções auxiliares para tarefas
-func canEditTask(uid string, taskID string) (bool, error) {
-	utilities.LogDebug("Verificando permissão de edição para usuário %s na tarefa %s", uid, taskID)
-	db, err := database.ConnectPostgres()
-	if err != nil {
-		utilities.LogError(err, "Erro ao conectar ao banco de dados")
-		return false, err
-	}
-	var userID int
-	err = db.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", uid).Scan(&userID)
-	if err != nil {
-		utilities.LogError(err, "Erro ao obter ID do usuário para verificação de permissão")
-		return false, err
-	}
-
-	// Verificar se é o criador da tarefa
-	var isCreator bool
-	err = db.QueryRow(
-		"SELECT EXISTS(SELECT 1 FROM tarefas WHERE id = $1 AND criado_por = $2)",
-		taskID, userID,
-	).Scan(&isCreator)
-	if err != nil {
-		utilities.LogError(err, "Erro ao verificar se usuário é criador da tarefa")
-		return false, err
-	}
-	if isCreator {
-		utilities.LogDebug("Usuário é o criador da tarefa")
-		return true, nil
-	}
-
-	// Verificar se é admin do workspace da tarefa
-	var isAdmin bool
-	err = db.QueryRow(`
-        SELECT EXISTS(
-            SELECT 1 FROM membros_workspace mw
-            JOIN tarefas t ON mw.workspace_id = t.workspace_id
-            WHERE t.id = $1 AND mw.usuario_id = $2 AND mw.role = 'admin'
-        )`, taskID, userID,
-	).Scan(&isAdmin)
-
-	if err != nil {
-		utilities.LogError(err, "Erro ao verificar se usuário é admin do workspace")
-		return false, err
-	}
-
-	if isAdmin {
-		utilities.LogDebug("Usuário é admin do workspace")
-	} else {
-		utilities.LogDebug("Usuário não tem permissão de edição")
-	}
-
-	return isAdmin, nil
-}
-
-func canDeleteTask(uid string, taskID string) (bool, error) {
-	utilities.LogDebug("Verificando permissão de exclusão para usuário %s na tarefa %s", uid, taskID)
-	// Mesma lógica que canEditTask para este exemplo
-	return canEditTask(uid, taskID)
 }

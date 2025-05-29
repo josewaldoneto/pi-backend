@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 
+	"cloud.google.com/go/firestore"
 	firebase "firebase.google.com/go/v4"
 	"firebase.google.com/go/v4/auth"
 	"google.golang.org/api/option"
@@ -41,4 +42,20 @@ func GetAuthClient() *auth.Client {
 		log.Fatalf("Erro ao obter cliente de Auth: %v", err)
 	}
 	return authClient
+}
+
+func GetFirestoreClient() (*firestore.Client, error) {
+	app, err := InitializeFirebase()
+	if err != nil {
+		// Retorne o erro em vez de Fatalf
+		return nil, fmt.Errorf("erro ao inicializar Firebase: %w", err)
+	}
+	ctx := context.Background()
+	// Obter o cliente do Firestore a partir do app
+	firestoreClient, err := app.Firestore(ctx)
+	if err != nil {
+		// Retorne o erro em vez de Fatalf
+		return nil, fmt.Errorf("erro ao obter cliente do Firestore: %w", err)
+	}
+	return firestoreClient, nil
 }
