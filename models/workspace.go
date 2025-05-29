@@ -37,6 +37,15 @@ type UserWorkspace struct {
 	JoinedAt    time.Time `json:"joined_at"`
 }
 
+// UserWorkspaceInfo descreve um workspace do qual o usuário é membro.
+type UserWorkspaceInfo struct {
+	ID       int64  `json:"id"`        // ID do workspace
+	Name     string `json:"name"`      // Nome do workspace
+	UserRole string `json:"user_role"` // Papel do usuário neste workspace (ex: "admin", "member")
+	IsOwner  bool   `json:"is_owner"`  // True se o usuário logado for o dono deste workspace
+	// OwnerUID string `json:"owner_uid"` // Opcional: Firebase UID do dono do workspace
+}
+
 // ...
 
 type WorkspaceMember struct {
@@ -167,7 +176,7 @@ func ListWorkspaceMembers(db *sql.DB, workspaceID int64) ([]WorkspaceMember, err
 func GetWorkspaceInfo(db *sql.DB, workspaceID int64) (*Workspace, error) {
 	var workspace Workspace
 	query := `
-		SELECT id, name, description, is_public, owner_uid, created_at, members
+		SELECT id, name, description, is_public, owner_uid, created_at
 		FROM workspaces
 		WHERE id = $1
 	`
@@ -179,7 +188,6 @@ func GetWorkspaceInfo(db *sql.DB, workspaceID int64) (*Workspace, error) {
 		&workspace.IsPublic,
 		&workspace.OwnerUID,
 		&workspace.CreatedAt,
-		&workspace.Members,
 	)
 
 	if err != nil {
@@ -242,16 +250,16 @@ func DeleteWorkspace(db *sql.DB, workspaceID int64, ownerUID string) error {
 	return nil
 }
 
-func AddUserToWorkspace(db *sql.DB, workspaceID int64, userFirebaseUID string, role string) error {
+func AddUserToWorkspace(db *sql.DB, workspaceID int64, email string, role string) error {
 	if role == "" {
 		role = "member"
 	}
 
 	var localUserID int64
-	err := db.QueryRow("SELECT id FROM users WHERE firebase_uid = $1", userFirebaseUID).Scan(&localUserID)
+	err := db.QueryRow("SELECT id FROM users WHERE email = $1", email).Scan(&localUserID)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return fmt.Errorf("usuário com Firebase UID %s não encontrado", userFirebaseUID)
+			return fmt.Errorf("usuário com email %s não encontrado", email)
 		}
 		return fmt.Errorf("erro ao buscar ID do usuário: %w", err)
 	}
@@ -263,7 +271,7 @@ func AddUserToWorkspace(db *sql.DB, workspaceID int64, userFirebaseUID string, r
 
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "violates unique constraint") {
-			return fmt.Errorf("usuário (Firebase UID: %s) já é membro do workspace %d", userFirebaseUID, workspaceID)
+			return fmt.Errorf("usuário (email: %s) já é membro do workspace %d", email, workspaceID)
 		}
 		return fmt.Errorf("falha ao adicionar usuário ao workspace: %w", err)
 	}

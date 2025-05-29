@@ -10,12 +10,14 @@ import (
 	"projeto-integrador/models"
 	"projeto-integrador/utilities"
 	"strconv"
-	"strings"
 	"time"
 
 	"cloud.google.com/go/firestore" // Para firestore.ServerTimestamp se usado
 	"github.com/google/uuid"        // Para gerar IDs únicos para o Firestore
 	"github.com/gorilla/mux"
+
+	// ... seus outros imports ...
+	"google.golang.org/api/iterator" // <--- Adicione este import
 )
 
 const tasksSubCollection = "tasks" // Nome da subcoleção de tarefas no Firestore
@@ -199,14 +201,13 @@ func ListTasksHandler(w http.ResponseWriter, r *http.Request) {
 	iter := firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollection).Documents(ctx)
 	defer iter.Stop()
 
-	var tasks []map[string]interface{} // Usando map para flexibilidade ou defina uma struct de resposta
+	var tasks []map[string]interface{}
 	for {
 		doc, err := iter.Next()
-		if err != nil {
-			// TODO: Melhorar tratamento de erro do iter.Next() (ex: iterator.Done)
-			if err.Error() == "EOF" || strings.Contains(err.Error(), "iterator done") { // Adaptar para o erro correto de fim de iteração
-				break
-			}
+		if err == iterator.Done { // <<-- CORREÇÃO AQUI: Verifica se é o fim do iterador
+			break // Sai do loop normalmente, não é um erro
+		}
+		if err != nil { // Trata outros erros reais que podem ocorrer durante a iteração
 			utilities.LogError(err, "ListTasksHandler: Erro ao iterar tarefas do Firestore")
 			http.Error(w, "Failed to retrieve tasks", http.StatusInternalServerError)
 			return
@@ -216,8 +217,12 @@ func ListTasksHandler(w http.ResponseWriter, r *http.Request) {
 		tasks = append(tasks, taskData)
 	}
 
+	// Se o loop terminar normalmente (incluindo o caso de não haver tarefas),
+	// 'tasks' será um array vazio ou conterá as tarefas encontradas.
+	utilities.LogInfo(fmt.Sprintf("ListTasksHandler: %d tarefas encontradas para o workspace %d", len(tasks), workspaceID))
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(tasks)
+	json.NewEncoder(w).Encode(tasks) // Retorna a lista de tarefas (pode ser vazia)
+
 }
 
 // GetTaskHandler busca os detalhes de uma tarefa específica do Firestore

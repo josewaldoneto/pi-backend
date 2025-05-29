@@ -10,9 +10,11 @@ import (
 	"projeto-integrador/firebase"
 	"projeto-integrador/models"
 	"projeto-integrador/utilities"
+	"strconv"
 	"strings"
 
 	"firebase.google.com/go/v4/auth"
+	"github.com/gorilla/mux"
 )
 
 type SocialLoginInput struct {
@@ -186,9 +188,22 @@ func UpdateUserHandler(w http.ResponseWriter, r *http.Request) {
 
 // GetUserHandler retorna informações de um usuário específico
 func GetUserHandler(w http.ResponseWriter, r *http.Request) {
-	userID := r.URL.Query().Get("id")
+	vars := mux.Vars(r)  // Pega as variáveis do caminho da URL
+	userID := vars["id"] // Acessa a variável "id" definida na rota
+
 	if userID == "" {
-		http.Error(w, "User ID is required", http.StatusBadRequest)
+		// Este caso não deveria acontecer se a rota tem {id} e mux está funcionando,
+		// mas é uma verificação de segurança. O erro que você viu ("User ID is required")
+		// aconteceria se 'vars["id"]' não existisse ou estivesse vazio.
+		utilities.LogError(fmt.Errorf("ID do usuário ausente nos parâmetros da rota"), "GetUserHandler")
+		http.Error(w, "User ID is required in path", http.StatusBadRequest)
+		return
+	}
+
+	userIDInt, errConv := strconv.ParseInt(userID, 10, 64)
+	if errConv != nil {
+		utilities.LogError(errConv, "GetUserHandler: ID do usuário inválido na rota")
+		http.Error(w, "Invalid User ID format", http.StatusBadRequest)
 		return
 	}
 
@@ -201,7 +216,7 @@ func GetUserHandler(w http.ResponseWriter, r *http.Request) {
 	defer db.Close()
 
 	var user models.Usuario
-	err = db.QueryRow("SELECT firebase_uid, email, display_name FROM users WHERE firebase_uid = $1", userID).
+	err = db.QueryRow("SELECT firebase_uid, email, display_name FROM users WHERE id = $1", userIDInt).
 		Scan(&user.Firebase_uid, &user.Email, &user.DisplayName)
 	if err != nil {
 		utilities.LogError(err, "Erro ao buscar usuário")

@@ -21,49 +21,43 @@ func LoadRoutes() {
 	// Aplicar o middleware de logging global em todas as rotas
 	r.Use(handlers.LoggingMiddleware)
 
-	// --- Rotas Públicas ---
-	r.HandleFunc("/register", handlers.RegisterHandler).Methods("POST")
-	// r.HandleFunc("/login", handlers.LoginHandler).Methods("POST") // Seu handler de login tradicional (se existir)
-	// Adicionando o handler para finalizar login com token Firebase (social, etc.)
-	r.HandleFunc("/auth/finalize-login", handlers.FinalizeFirebaseLoginHandler).Methods("POST")
+	// --- Rotas de Autenticação e Públicas ---
+	r.HandleFunc("/auth/register", handlers.RegisterHandler).Methods("POST")                      //ok
+	r.HandleFunc("/auth/finalize-login", handlers.FinalizeFirebaseLoginHandler).Methods("POST")   //ok
+	r.HandleFunc("/auth/logout", handlers.AuthMiddleware(handlers.LogoutHandler)).Methods("POST") //ok
+	// --- Rotas de Usuário (autenticado, referindo-se ao próprio usuário logado) ---
+	r.HandleFunc("/user/info", handlers.AuthMiddleware(handlers.UserHandler)).Methods("GET")            //ok
+	r.HandleFunc("/user/update", handlers.AuthMiddleware(handlers.UpdateUserHandler)).Methods("PUT")    //ok
+	r.HandleFunc("/user/delete", handlers.AuthMiddleware(handlers.DeleteUserHandler)).Methods("DELETE") // precisa ser feito
+	// --- Rotas de Usuários (operações gerais, protegidas) ---
+	r.HandleFunc("/users/list", handlers.AuthMiddleware(handlers.GetAllUsersHandler)).Methods("GET")                     //ok
+	r.HandleFunc("/users/info/{id}", handlers.AuthMiddleware(handlers.GetUserHandler)).Methods("GET")                    //ok
+	r.HandleFunc("/user/my-workspaces/list", handlers.AuthMiddleware(handlers.ListUserWorkspacesHandler)).Methods("GET") //ok
 
-	// --- Rotas Autenticadas ---
+	// --- Rotas de Workspace (protegidas) ---
+	r.HandleFunc("/workspace/create", handlers.AuthMiddleware(handlers.CreateWorkspaceHandler)).Methods("POST")                                  //ok
+	r.HandleFunc("/workspace/info/{workspace_id}", handlers.AuthMiddleware(handlers.GetWorkspaceInfoHandler)).Methods("GET")                     //ok
+	r.HandleFunc("/workspace/update/{workspace_id}", handlers.AuthMiddleware(handlers.UpdateWorkspaceHandler)).Methods("PUT")                    //ok
+	r.HandleFunc("/workspace/delete/{workspace_id}", handlers.AuthMiddleware(handlers.DeleteWorkspaceHandler)).Methods("DELETE")                 //ok
+	r.HandleFunc("/workspace/{workspace_id}/members/list", handlers.AuthMiddleware(handlers.ListWorkspaceMembersHandler)).Methods("GET")         //ok
+	r.HandleFunc("/workspace/{workspace_id}/members/add", handlers.AuthMiddleware(handlers.AddUserToWorkspaceHandler)).Methods("POST")           //ok
+	r.HandleFunc("/workspace/{workspace_id}/members/remove", handlers.AuthMiddleware(handlers.RemoveUserFromWorkspaceHandler)).Methods("DELETE") //ok
 
-	// Logout - idealmente autenticado se realiza ações no backend (ex: revogar tokens)
-	r.HandleFunc("/logout", handlers.AuthMiddleware(handlers.LogoutHandler)).Methods("POST")
-
-	// Rotas de Usuário (protegidas)
-	r.HandleFunc("/user", handlers.AuthMiddleware(handlers.UserHandler)).Methods("GET") //ok
-	r.HandleFunc("/user", handlers.AuthMiddleware(handlers.UpdateUserHandler)).Methods("PUT")
-	r.HandleFunc("/user", handlers.AuthMiddleware(handlers.DeleteUserHandler)).Methods("DELETE")
-	r.HandleFunc("/users", handlers.AuthMiddleware(handlers.GetAllUsersHandler)).Methods("GET")  //ok
-	r.HandleFunc("/users/{id}", handlers.AuthMiddleware(handlers.GetUserHandler)).Methods("GET") //nao ta funcionando a busca do parametro na rota
-
-	// Novas Rotas de Workspace (protegidas)
-	r.HandleFunc("/workspaces", handlers.AuthMiddleware(handlers.CreateWorkspaceHandler)).Methods("POST")
-	r.HandleFunc("/workspaces/{workspace_id}", handlers.AuthMiddleware(handlers.GetWorkspaceInfoHandler)).Methods("GET")
-	r.HandleFunc("/workspaces/{workspace_id}", handlers.AuthMiddleware(handlers.UpdateWorkspaceHandler)).Methods("PUT")
-	r.HandleFunc("/workspaces/{workspace_id}", handlers.AuthMiddleware(handlers.DeleteWorkspaceHandler)).Methods("DELETE")
-	r.HandleFunc("/workspaces/{workspace_id}/members", handlers.AuthMiddleware(handlers.ListWorkspaceMembersHandler)).Methods("GET")
-	r.HandleFunc("/workspaces/{workspace_id}/members", handlers.AuthMiddleware(handlers.AddUserToWorkspaceHandler)).Methods("POST")
-	r.HandleFunc("/workspaces/{workspace_id}/members/{member_firebase_uid}", handlers.AuthMiddleware(handlers.RemoveUserFromWorkspaceHandler)).Methods("DELETE")
-
-	// Novas Rotas de Tarefas (protegidas e aninhadas sob workspaces)
-	r.HandleFunc("/workspaces/{workspace_id}/tasks", handlers.AuthMiddleware(handlers.CreateTaskHandler)).Methods("POST")
-	r.HandleFunc("/workspaces/{workspace_id}/tasks", handlers.AuthMiddleware(handlers.ListTasksHandler)).Methods("GET")
-	r.HandleFunc("/workspaces/{workspace_id}/tasks/{task_doc_id}", handlers.AuthMiddleware(handlers.GetTaskHandler)).Methods("GET")
-	r.HandleFunc("/workspaces/{workspace_id}/tasks/{task_doc_id}", handlers.AuthMiddleware(handlers.UpdateTaskHandler)).Methods("PUT")
-	r.HandleFunc("/workspaces/{workspace_id}/tasks/{task_doc_id}", handlers.AuthMiddleware(handlers.DeleteTaskHandler)).Methods("DELETE")
+	// --- Rotas de Tarefas (protegidas e aninhadas sob workspaces) ---
+	r.HandleFunc("/workspace/{workspace_id}/task/create", handlers.AuthMiddleware(handlers.CreateTaskHandler)).Methods("POST")                 //ok
+	r.HandleFunc("/workspace/{workspace_id}/task/list", handlers.AuthMiddleware(handlers.ListTasksHandler)).Methods("GET")                     //ok
+	r.HandleFunc("/workspace/{workspace_id}/task/info/{task_doc_id}", handlers.AuthMiddleware(handlers.GetTaskHandler)).Methods("GET")         //ok
+	r.HandleFunc("/workspace/{workspace_id}/task/update/{task_doc_id}", handlers.AuthMiddleware(handlers.UpdateTaskHandler)).Methods("PUT")    //ok
+	r.HandleFunc("/workspace/{workspace_id}/task/delete/{task_doc_id}", handlers.AuthMiddleware(handlers.DeleteTaskHandler)).Methods("DELETE") //ok
 
 	// Configuração do CORS
 	headers := gorillahandlers.AllowedHeaders([]string{"X-Requested-With", "Content-Type", "Authorization"})
 	methods := gorillahandlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 
-	// Obter origens permitidas das variáveis de ambiente
 	allowedOriginsEnv := os.Getenv("CORS_ALLOWED_ORIGINS")
 	var allowedOrigins []string
 	if allowedOriginsEnv == "" {
-		allowedOrigins = []string{"*"} // Fallback para permitir todas as origens se não estiver configurado
+		allowedOrigins = []string{"*"}
 		utilities.LogInfo("CORS_ALLOWED_ORIGINS não definida, permitindo todas as origens ('*'). Defina para maior segurança em produção.")
 	} else {
 		allowedOrigins = strings.Split(allowedOriginsEnv, ",")
@@ -71,13 +65,11 @@ func LoadRoutes() {
 	origins := gorillahandlers.AllowedOrigins(allowedOrigins)
 	utilities.LogInfo("Configurando CORS com origens permitidas: %v", allowedOrigins)
 
-	// Aplicar middleware CORS e iniciar servidor
 	handler := gorillahandlers.CORS(headers, methods, origins)(r)
 
-	// Obter porta do servidor das variáveis de ambiente
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
-		port = "8080" // Porta padrão se não estiver configurada
+		port = "8080"
 	}
 
 	utilities.LogInfo("Servidor iniciado na porta %s", port)
