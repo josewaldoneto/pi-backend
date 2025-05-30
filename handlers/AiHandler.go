@@ -1,190 +1,340 @@
-// Em handlers/aiSpecificHandlers.go (novo arquivo)
+// Em handlers/AiHandler.go
 package handlers
 
 import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	ai_service "projeto-integrador/ai_services" // Pacote onde você definiu CallAIAPI
-	"projeto-integrador/models"                 // Pacote onde você definiu as structs de request/response da IA
+	"projeto-integrador/ai_services" // Onde CallAIAPI e LogAIInteraction, GetContextForIA estão
+
+	// Para GetFirestoreClient (se LogAIInteraction precisar diretamente)
+	"projeto-integrador/models" // Onde as structs de request/response da IA e AIRequestHistoryEntry estão
 	"projeto-integrador/utilities"
+	"strconv"
+	// "github.com/gorilla/mux" // Desnecessário se não estiver usando mux.Vars diretamente aqui
 )
 
-// CodeReviewAIHandler recebe código do frontend e envia para a API de IA para review.
-func CodeReviewAIHandler(w http.ResponseWriter, r *http.Request) {
-	var input models.CodeReviewAIRequest // Struct que seu frontend envia
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		utilities.LogError(err, "CodeReviewAIHandler: Erro ao decodificar JSON de entrada")
-		http.Error(w, "Corpo da requisição inválido", http.StatusBadRequest)
+// WorkspaceTaskAssistantHandler interage com a IA para dar assistência sobre tarefas.
+func WorkspaceTaskAssistantHandler(w http.ResponseWriter, r *http.Request) {
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := r.Context()
+
+	var frontendInput struct {
+		UserMessage string `json:"user_message"`
+		WorkspaceID string `json:"workspace_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&frontendInput); err != nil {
+		utilities.LogError(err, "TaskAssistantHandler: Erro ao decodificar JSON de entrada")
+		http.Error(w, `{"error": "Corpo da requisição inválido"}`, http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
 
-	if input.Code == "" {
+	if frontendInput.UserMessage == "" {
+		http.Error(w, `{"error": "Mensagem do usuário é obrigatória"}`, http.StatusBadRequest)
+		return
+	}
+	if frontendInput.WorkspaceID == "" {
+		http.Error(w, `{"error": "ID do workspace é obrigatório"}`, http.StatusBadRequest)
+		return
+	}
+
+	workspaceIDPg, convErr := strconv.ParseInt(frontendInput.WorkspaceID, 10, 64)
+	if convErr != nil {
+		utilities.LogError(convErr, "TaskAssistantHandler: WorkspaceID inválido no payload: "+frontendInput.WorkspaceID)
+		http.Error(w, `{"error": "Formato de WorkspaceID inválido"}`, http.StatusBadRequest)
+		return
+	}
+
+	utilities.LogInfo(fmt.Sprintf("TaskAssistantHandler: Usuário %s pediu assistência para workspace %s com a mensagem: %s",
+		requestingUserFirebaseUID, frontendInput.WorkspaceID, frontendInput.UserMessage))
+
+	// 1. Montar o contexto para a IA
+	workspaceContextForAI, errCtx := ai_services.GetContextForIA(workspaceIDPg, frontendInput.UserMessage)
+	if errCtx != nil {
+		utilities.LogError(errCtx, "TaskAssistantHandler: Erro ao obter contexto do workspace")
+		http.Error(w, `{"error": "Falha ao carregar dados do workspace"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Preparar o payload para a API Python
+	aiRequestPayload := models.TaskAssistantAIRequest{
+		WorkspaceContext: *workspaceContextForAI,
+	}
+
+	var aiSuccessfulResponse models.TaskAssistantAIResponse
+	aiEndpointPath := "/assistente-tarefas" // CONFIRME ESTE PATH COM SUA API PYTHON
+
+	// 3. Chamar a API de IA
+	statusCode, rawResponseBodyFromAI, errAI := ai_services.CallAIAPI(ctx, aiEndpointPath, aiRequestPayload, &aiSuccessfulResponse)
+
+	// 4. Tentar decodificar a resposta bruta para log (seja sucesso ou erro estruturado da IA)
+	var responseToLog interface{}
+	if errAI == nil && statusCode >= 200 && statusCode < 300 {
+		responseToLog = aiSuccessfulResponse
+	} else if rawResponseBodyFromAI != nil {
+		var genericErrorResponse map[string]interface{}
+		if json.Unmarshal(rawResponseBodyFromAI, &genericErrorResponse) == nil {
+			responseToLog = genericErrorResponse
+		} else {
+			responseToLog = string(rawResponseBodyFromAI)
+		}
+	}
+
+	// 5. Logar a interação
+	ai_services.LogAIInteraction( // Removido firebase.GetFirestoreClient() daqui, pois LogAIInteraction já o obtém
+		ctx,
+		requestingUserFirebaseUID,
+		workspaceIDPg,
+		"task_assistant",
+		frontendInput,
+		aiRequestPayload,
+		responseToLog,
+		statusCode,
+		errAI,
+	)
+
+	// 6. Responder ao frontend
+	if errAI != nil {
+		utilities.LogError(errAI, fmt.Sprintf("TaskAssistantHandler: Erro da API Python (status: %d) para /assistente-tarefas. Corpo: %s", statusCode, string(rawResponseBodyFromAI)))
+		w.Header().Set("Content-Type", "application/json")
+		// Tenta retornar o erro da IA de forma estruturada se possível, senão o erro da chamada
+		if responseToLog != nil {
+			// Se responseToLog for um mapa (erro estruturado da IA), envie isso.
+			if errMap, ok := responseToLog.(map[string]interface{}); ok {
+				if errMsg, ok := errMap["error"].(string); ok {
+					http.Error(w, fmt.Sprintf(`{"error_ia": "%s"}`, errMsg), statusCode)
+					return
+				}
+			}
+		}
+		http.Error(w, fmt.Sprintf(`{"error": "Falha na comunicação com o assistente de IA", "details": %q}`, string(rawResponseBodyFromAI)), statusCode)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(aiSuccessfulResponse)
+}
+
+// CodeReviewAIHandler, SummarizeTextAIHandler, GenerateMindMapIdeasAIHandler
+// Precisam ser ajustados de forma similar para incluir o logging com LogAIInteraction
+// e para o tratamento de erro ao decodificar a resposta da IA.
+
+// Exemplo ajustado para CodeReviewAIHandler:
+func CodeReviewAIHandler(w http.ResponseWriter, r *http.Request) {
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := r.Context()
+	var workspaceIDForLog int64 = 0 // Ou obtenha de algum lugar se for relevante
+
+	var frontendInput models.CodeReviewAIRequest
+	if err := json.NewDecoder(r.Body).Decode(&frontendInput); err != nil {
+		utilities.LogError(err, "CodeReviewAIHandler: Erro ao decodificar JSON de entrada")
+		http.Error(w, `{"error": "Corpo da requisição inválido"}`, http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	if frontendInput.Code == "" {
 		http.Error(w, `{"error": "O campo 'code' é obrigatório para code review"}`, http.StatusBadRequest)
 		return
 	}
-	if input.Language == "" { // Pode adicionar validação para linguagens suportadas
-		input.Language = "Go" // Um padrão, ou tornar obrigatório
+	if frontendInput.Language == "" {
+		frontendInput.Language = "Python" // Default ou tornar obrigatório
 	}
 
-	var aiResponse models.CodeReviewAIResponse
-	var aiErrorResponse models.CodeReviewAIResponse // Usando a mesma struct se o erro da IA vier no campo 'error'
+	aiRequestPayload := models.CodeReviewAIRequest{Code: frontendInput.Code, Language: frontendInput.Language}
+	var aiSuccessfulResponse models.CodeReviewAIResponse
+	aiEndpointPath := "/code-review" // CONFIRME ESTE PATH
 
-	// O payload para a API de IA pode ser o mesmo que o input do frontend, ou você pode mapeá-lo.
-	// Aqui, estamos assumindo que a API de IA espera a mesma estrutura.
-	aiRequestPayload := models.CodeReviewAIRequest{Code: input.Code, Language: input.Language}
+	statusCode, rawResponseBodyFromAI, errAI := ai_services.CallAIAPI(ctx, aiEndpointPath, aiRequestPayload, &aiSuccessfulResponse)
 
-	statusCode, err := ai_service.CallAIAPI(r.Context(), "/code-review", aiRequestPayload, &aiResponse, &aiErrorResponse)
-	if err != nil {
-		utilities.LogError(err, fmt.Sprintf("CodeReviewAIHandler: Erro ao chamar API de IA (status: %d)", statusCode))
-		// Se aiErrorResponse.Error tiver algo, use-o
-		if aiErrorResponse.Error != "" {
-			http.Error(w, fmt.Sprintf(`{"error": "Erro da IA: %s"}`, aiErrorResponse.Error), statusCode)
+	var responseToLog interface{}
+	var errorDetailFromAI models.CodeReviewAIResponse // Para tentar pegar o .Error da IA
+	if errAI == nil && statusCode >= 200 && statusCode < 300 {
+		responseToLog = aiSuccessfulResponse
+	} else if rawResponseBodyFromAI != nil {
+		if json.Unmarshal(rawResponseBodyFromAI, &errorDetailFromAI) == nil && errorDetailFromAI.Error != "" {
+			responseToLog = errorDetailFromAI
 		} else {
-			http.Error(w, `{"error": "Falha ao processar revisão de código"}`, http.StatusInternalServerError)
+			var genericErrorResponse map[string]interface{}
+			if json.Unmarshal(rawResponseBodyFromAI, &genericErrorResponse) == nil {
+				responseToLog = genericErrorResponse
+			} else {
+				responseToLog = string(rawResponseBodyFromAI)
+			}
+		}
+	}
+
+	ai_services.LogAIInteraction(
+		ctx,
+		requestingUserFirebaseUID,
+		workspaceIDForLog, // Usar ID real se aplicável
+		"code_review",
+		frontendInput,
+		aiRequestPayload,
+		responseToLog,
+		statusCode,
+		errAI,
+	)
+
+	if errAI != nil {
+		utilities.LogError(errAI, fmt.Sprintf("CodeReviewAIHandler: Erro da API Python (status: %d) para %s. Corpo: %s", statusCode, aiEndpointPath, string(rawResponseBodyFromAI)))
+		w.Header().Set("Content-Type", "application/json")
+		if errorDetailFromAI.Error != "" {
+			http.Error(w, fmt.Sprintf(`{"error_ia": "%s"}`, errorDetailFromAI.Error), statusCode)
+		} else {
+			http.Error(w, fmt.Sprintf(`{"error": "Falha ao processar revisão de código", "details": %q}`, string(rawResponseBodyFromAI)), statusCode)
 		}
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode) // Geralmente http.StatusOK se chegou aqui sem erro
-	json.NewEncoder(w).Encode(aiResponse)
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(aiSuccessfulResponse)
 }
 
-// SummarizeTextAIHandler recebe texto e envia para a API de IA para resumo.
+// Adapte SummarizeTextAIHandler e GenerateMindMapIdeasAIHandler de forma similar:
+// 1. Adicione a obtenção do requestingUserFirebaseUID e ctx.
+// 2. Defina um workspaceIDForLog apropriado.
+// 3. Após chamar CallAIAPI, determine responseToLog (sucesso ou erro estruturado/bruto).
+// 4. Chame aiservices.LogAIInteraction.
+// 5. Ajuste a resposta de erro ao frontend para incluir detalhes do erro da IA, se possível.
+
 func SummarizeTextAIHandler(w http.ResponseWriter, r *http.Request) {
-	var input models.SummarizeTextAIRequest
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := r.Context()
+	var workspaceIDForLog int64 = 0 // Ou ID real se aplicável
+
+	var frontendInput models.SummarizeTextAIRequest
+	if err := json.NewDecoder(r.Body).Decode(&frontendInput); err != nil {
 		utilities.LogError(err, "SummarizeTextAIHandler: Erro ao decodificar JSON")
-		http.Error(w, "Corpo da requisição inválido", http.StatusBadRequest)
+		http.Error(w, `{"error": "Corpo da requisição inválido"}`, http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
 
-	if input.Text == "" {
+	if frontendInput.Text == "" {
 		http.Error(w, `{"error": "O campo 'text' é obrigatório para resumo"}`, http.StatusBadRequest)
 		return
 	}
 
-	var aiResponse models.SummarizeTextAIResponse
-	var aiErrorResponse models.SummarizeTextAIResponse // Reutilizando se o campo 'error' é comum
+	aiRequestPayload := models.SummarizeTextAIRequest{Text: frontendInput.Text}
+	var aiSuccessfulResponse models.SummarizeTextAIResponse
+	var errorDetailFromAI models.SummarizeTextAIResponse
+	aiEndpointPath := "/summarize" // CONFIRME ESTE PATH
 
-	aiRequestPayload := models.SummarizeTextAIRequest{Text: input.Text}
+	statusCode, rawResponseBodyFromAI, errAI := ai_services.CallAIAPI(ctx, aiEndpointPath, aiRequestPayload, &aiSuccessfulResponse)
 
-	statusCode, err := ai_service.CallAIAPI(r.Context(), "/summarize", aiRequestPayload, &aiResponse, &aiErrorResponse)
-	if err != nil {
-		utilities.LogError(err, fmt.Sprintf("SummarizeTextAIHandler: Erro ao chamar API de IA (status: %d)", statusCode))
-		if aiErrorResponse.Error != "" {
-			http.Error(w, fmt.Sprintf(`{"error": "Erro da IA: %s"}`, aiErrorResponse.Error), statusCode)
+	var responseToLog interface{}
+	if errAI == nil && statusCode >= 200 && statusCode < 300 {
+		responseToLog = aiSuccessfulResponse
+	} else if rawResponseBodyFromAI != nil {
+		if json.Unmarshal(rawResponseBodyFromAI, &errorDetailFromAI) == nil && errorDetailFromAI.Error != "" {
+			responseToLog = errorDetailFromAI
 		} else {
-			http.Error(w, `{"error": "Falha ao processar resumo de texto"}`, http.StatusInternalServerError)
+			var genericErrorResponse map[string]interface{}
+			if json.Unmarshal(rawResponseBodyFromAI, &genericErrorResponse) == nil {
+				responseToLog = genericErrorResponse
+			} else {
+				responseToLog = string(rawResponseBodyFromAI)
+			}
+		}
+	}
+
+	ai_services.LogAIInteraction(
+		ctx,
+		requestingUserFirebaseUID,
+		workspaceIDForLog,
+		"text_summary",
+		frontendInput,
+		aiRequestPayload,
+		responseToLog,
+		statusCode,
+		errAI,
+	)
+
+	if errAI != nil {
+		utilities.LogError(errAI, fmt.Sprintf("SummarizeTextAIHandler: Erro da API Python (status: %d) para %s. Corpo: %s", statusCode, aiEndpointPath, string(rawResponseBodyFromAI)))
+		w.Header().Set("Content-Type", "application/json")
+		if errorDetailFromAI.Error != "" {
+			http.Error(w, fmt.Sprintf(`{"error_ia": "%s"}`, errorDetailFromAI.Error), statusCode)
+		} else {
+			http.Error(w, fmt.Sprintf(`{"error": "Falha ao processar resumo", "details": %q}`, string(rawResponseBodyFromAI)), statusCode)
 		}
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(aiResponse)
+	json.NewEncoder(w).Encode(aiSuccessfulResponse)
 }
 
-// GenerateMindMapIdeasAIHandler recebe texto e envia para a API de IA para ideias de mapa mental.
 func GenerateMindMapIdeasAIHandler(w http.ResponseWriter, r *http.Request) {
-	// Similar aos handlers acima, mas usando MindMapIdeasAIRequest e MindMapIdeasAIResponse
-	var input models.MindMapIdeasAIRequest
-	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-		// ...
-		http.Error(w, "Corpo da requisição inválido", http.StatusBadRequest)
+	requestingUserFirebaseUID := r.Context().Value("userUID").(string)
+	ctx := r.Context()
+	var workspaceIDForLog int64 = 0 // Ou ID real se aplicável
+
+	var frontendInput models.MindMapIdeasAIRequest
+	if err := json.NewDecoder(r.Body).Decode(&frontendInput); err != nil {
+		utilities.LogError(err, "GenerateMindMapIdeasAIHandler: Erro ao decodificar JSON")
+		http.Error(w, `{"error": "Corpo da requisição inválido"}`, http.StatusBadRequest)
 		return
 	}
 	defer r.Body.Close()
 
-	if input.Text == "" {
+	if frontendInput.Text == "" {
 		http.Error(w, `{"error": "O campo 'text' é obrigatório para mapa mental"}`, http.StatusBadRequest)
 		return
 	}
 
-	var aiResponse models.MindMapIdeasAIResponse
-	var aiErrorResponse models.MindMapIdeasAIResponse
+	aiRequestPayload := models.MindMapIdeasAIRequest{Text: frontendInput.Text}
+	var aiSuccessfulResponse models.MindMapIdeasAIResponse
+	var errorDetailFromAI models.MindMapIdeasAIResponse
+	aiEndpointPath := "/mindmap-ideas" // CONFIRME ESTE PATH
 
-	aiRequestPayload := models.MindMapIdeasAIRequest{Text: input.Text}
+	statusCode, rawResponseBodyFromAI, errAI := ai_services.CallAIAPI(ctx, aiEndpointPath, aiRequestPayload, &aiSuccessfulResponse)
 
-	statusCode, err := ai_service.CallAIAPI(r.Context(), "/mindmap-ideas", aiRequestPayload, &aiResponse, &aiErrorResponse)
-	if err != nil {
-		// ... (tratamento de erro similar) ...
-		http.Error(w, `{"error": "Falha ao gerar ideias para mapa mental"}`, http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(aiResponse)
-}
-
-// WorkspaceTaskAssistantHandler recebe uma mensagem do usuário e o contexto do workspace,
-// envia para a API de IA e retorna sugestões.
-func WorkspaceTaskAssistantHandler(w http.ResponseWriter, r *http.Request) {
-	// Este handler precisará do workspace_id (provavelmente da URL)
-	// e da mensagem do usuário (do corpo da requisição).
-	// vars := mux.Vars(r)
-	// workspaceIDStr := vars["workspace_id"]
-	// workspaceID, _ := strconv.ParseInt(workspaceIDStr, 10, 64)
-
-	var userInput struct {
-		UserMessage string `json:"user_message"`
-		WorkspaceID int64  `json:"workspace_id"` // Frontend envia o ID do workspace atual
-	}
-	if err := json.NewDecoder(r.Body).Decode(&userInput); err != nil {
-		utilities.LogError(err, "TaskAssistantHandler: Erro ao decodificar JSON")
-		http.Error(w, "Corpo da requisição inválido", http.StatusBadRequest)
-		return
-	}
-	defer r.Body.Close()
-
-	if userInput.UserMessage == "" || userInput.WorkspaceID == 0 {
-		http.Error(w, `{"error": "Mensagem do usuário e ID do workspace são obrigatórios"}`, http.StatusBadRequest)
-		return
-	}
-
-	// Aqui você chamaria a função que montamos para buscar o contexto do workspace:
-	// workspaceContext, err := services.GetContextForIA(userInput.WorkspaceID, userInput.UserMessage)
-	// if err != nil {
-	//    utilities.LogError(err, "TaskAssistantHandler: Erro ao obter contexto do workspace")
-	//    http.Error(w, `{"error": "Falha ao carregar contexto do workspace"}`, http.StatusInternalServerError)
-	//    return
-	// }
-	// // O workspaceContext já inclui a userInput.UserMessage como MsgAoUsuario
-
-	// Para este exemplo, vamos simular que o workspaceContext é o payload direto para a IA
-	// (você pode precisar de um endpoint específico na IA para isso)
-	// aiRequestPayload := workspaceContext
-
-	// Mock: Simular o payload que a IA do assistente de tasks esperaria
-	// Você precisa definir qual o endpoint da API de IA para o assistente de tasks
-	// e qual o payload exato (que pode ser o workspaceContext ou uma variação).
-	// Por agora, vamos assumir que é um endpoint "/task-assistant" e o payload é simples:
-	type TaskAssistantPayload struct {
-		Message     string `json:"message"`
-		WorkspaceID int64  `json:"workspace_id"`
-		// Inclua mais campos do contexto aqui, como nome do workspace, usuários, tarefas, etc.
-		// conforme a struct IAWorkspaceContext.
-	}
-	aiRequestPayload := TaskAssistantPayload{Message: userInput.UserMessage, WorkspaceID: userInput.WorkspaceID}
-
-	var aiResponse models.TaskAssistantAIResponse
-	var aiErrorResponse models.TaskAssistantAIResponse
-
-	statusCode, err := ai_service.CallAIAPI(r.Context(), "/task-assistant", aiRequestPayload, &aiResponse, &aiErrorResponse)
-	if err != nil {
-		utilities.LogError(err, fmt.Sprintf("TaskAssistantHandler: Erro ao chamar API de IA (status: %d)", statusCode))
-		if aiErrorResponse.Error != "" {
-			http.Error(w, fmt.Sprintf(`{"error": "Erro da IA: %s"}`, aiErrorResponse.Error), statusCode)
+	var responseToLog interface{}
+	if errAI == nil && statusCode >= 200 && statusCode < 300 {
+		responseToLog = aiSuccessfulResponse
+	} else if rawResponseBodyFromAI != nil {
+		if json.Unmarshal(rawResponseBodyFromAI, &errorDetailFromAI) == nil && errorDetailFromAI.Error != "" {
+			responseToLog = errorDetailFromAI
 		} else {
-			http.Error(w, `{"error": "Falha ao obter sugestões do assistente"}`, http.StatusInternalServerError)
+			var genericErrorResponse map[string]interface{}
+			if json.Unmarshal(rawResponseBodyFromAI, &genericErrorResponse) == nil {
+				responseToLog = genericErrorResponse
+			} else {
+				responseToLog = string(rawResponseBodyFromAI)
+			}
+		}
+	}
+
+	ai_services.LogAIInteraction(
+		ctx,
+		requestingUserFirebaseUID,
+		workspaceIDForLog,
+		"mindmap_ideas",
+		frontendInput,
+		aiRequestPayload,
+		responseToLog,
+		statusCode,
+		errAI,
+	)
+
+	if errAI != nil {
+		utilities.LogError(errAI, fmt.Sprintf("GenerateMindMapIdeasAIHandler: Erro da API Python (status: %d) para %s. Corpo: %s", statusCode, aiEndpointPath, string(rawResponseBodyFromAI)))
+		w.Header().Set("Content-Type", "application/json")
+		if errorDetailFromAI.Error != "" {
+			http.Error(w, fmt.Sprintf(`{"error_ia": "%s"}`, errorDetailFromAI.Error), statusCode)
+		} else {
+			http.Error(w, fmt.Sprintf(`{"error": "Falha ao gerar ideias para mapa mental", "details": %q}`, string(rawResponseBodyFromAI)), statusCode)
 		}
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(aiResponse)
+	json.NewEncoder(w).Encode(aiSuccessfulResponse)
 }
