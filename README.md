@@ -67,7 +67,7 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
 **Response (200 OK):**
 ```json
 {
-    "id": 1, // ID numérico do usuário no PostgreSQL (se incluído no model Usuario)
+    "id": 1, 
     "firebase_uid": "FIREBASE_UID_DO_USUARIO",
     "email": "joao@email.com",
     "display_name": "João Silva"
@@ -101,7 +101,7 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
 **Response (200 OK ou 204 No Content):**
 ```json
 {
-    "message": "Usuário deletado com sucesso" // Ou sem corpo com status 204
+    "message": "Usuário deletado com sucesso" 
 }
 ```
 
@@ -141,7 +141,7 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
 ```json
 [
     {
-        "id": 1, // ID numérico do usuário no PostgreSQL
+        "id": 1, 
         "firebase_uid": "FIREBASE_UID_JOAO",
         "email": "joao@email.com",
         "display_name": "João Silva"
@@ -190,13 +190,13 @@ Content-Type: application/json
 **Response (201 Created):**
 ```json
 {
-    "id": 2, // ID do novo workspace
+    "id": 2, 
     "name": "Projeto Phoenix",
     "description": "Workspace para o desenvolvimento do Projeto Phoenix.",
     "is_public": false,
     "owner_uid": "FIREBASE_UID_DO_CRIADOR",
-    "created_at": "2025-05-29T18:00:00Z", // Exemplo de timestamp
-    "members": 1 // Contagem inicial de membros (o criador)
+    "created_at": "2025-05-29T18:00:00Z", 
+    "members": 1 
 }
 ```
 
@@ -216,7 +216,7 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
     "is_public": false,
     "owner_uid": "FIREBASE_UID_DO_CRIADOR",
     "created_at": "2025-05-29T18:00:00Z",
-    "members": 3 // Contagem atualizada de membros
+    "members": 3 
 }
 ```
 
@@ -256,7 +256,7 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
 ```json
 [
     {
-        "user_id": "FIREBASE_UID_DO_MEMBRO1", // Firebase UID
+        "user_id": "FIREBASE_UID_DO_MEMBRO1", 
         "display_name": "Membro Um",
         "email": "membro1@email.com",
         "role": "admin",
@@ -334,7 +334,7 @@ Content-Type: application/json
 (Retorna os detalhes da tarefa como criados no Firestore, incluindo o ID do documento Firestore, similar à resposta de "Obter Detalhes de uma Tarefa")
 ```json
 {
-    "id": "ID_GERADO_PELO_FIRESTORE", // ID do documento no Firestore
+    "id": "ID_GERADO_PELO_FIRESTORE", 
     "title": "Implementar Autenticação de Dois Fatores",
     "description": "Detalhes sobre a implementação de 2FA usando TOTP.",
     "status": "pending",
@@ -346,9 +346,8 @@ Content-Type: application/json
         "filetype": "application/pdf"
     },
     "creatorFirebaseUid": "FIREBASE_UID_DO_CRIADOR",
-    // "workspace_id_pg": 2, // Pode ser incluído se útil na resposta
-    "createdAt": "2025-05-29T19:00:00Z", // Timestamp da criação
-    "lastUpdatedAt": "2025-05-29T19:00:00Z" // Timestamp da última atualização
+    "createdAt": "2025-05-29T19:00:00Z", 
+    "lastUpdatedAt": "2025-05-29T19:00:00Z" 
 }
 ```
 
@@ -363,7 +362,7 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
 ```json
 [
     {
-        "id": "FIRESTORE_DOC_ID_DA_TAREFA_1", // ID do documento no Firestore
+        "id": "FIRESTORE_DOC_ID_DA_TAREFA_1", 
         "title": "Implementar Autenticação de Dois Fatores",
         "description": "Detalhes sobre a implementação de 2FA usando TOTP.",
         "status": "pending",
@@ -374,7 +373,7 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
         "createdAt": "2025-05-29T19:00:00Z",
         "lastUpdatedAt": "2025-05-29T19:00:00Z"
     }
-    // ... outras tarefas
+    
 ]
 ```
 
@@ -462,7 +461,6 @@ Content-Type: application/json
 ```json
 {
     "error": "O campo 'code' é obrigatório para code review"
-    // ou {"error_ia": "Mensagem de erro específica da API de IA"}
 }
 ```
 
@@ -557,7 +555,6 @@ Ou:
 ```json
 {
     "error": "Mensagem do usuário é obrigatória"
-    // ou {"error_ia": "Mensagem de erro específica da API de IA"}
 }
 ```
 
