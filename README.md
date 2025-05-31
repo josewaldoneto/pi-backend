@@ -324,40 +324,31 @@ Content-Type: application/json
     "expiration_date": "2025-08-15T23:59:59Z", // Opcional, formato ISO 8601
     "attachment": { // Opcional
         "filename": "especificacao_2fa.pdf",
-        "url": "[https://storage.example.com/path/to/especificacao_2fa.pdf](https://storage.example.com/path/to/especificacao_2fa.pdf)",
+        "url": "[https://storage.example.com/path/to/especificacao_2fa.pdf](https://storage.example.com/path/to/especificacao_2fa.pdf)", // URL direta do arquivo
         "filetype": "application/pdf"
     }
 }
 ```
 **Exemplo de Path:** `/workspace/2/task/create`
 **Response (201 Created):**
-(Retorna os detalhes da tarefa como criados no Firestore, incluindo o ID do documento Firestore)
+(Retorna os detalhes da tarefa como criados no Firestore, incluindo o ID do documento Firestore, similar à resposta de "Obter Detalhes de uma Tarefa")
 ```json
 {
-    // Exemplo da estrutura de TaskDetailsFirestore que seu handler retorna
+    "id": "ID_GERADO_PELO_FIRESTORE", // ID do documento no Firestore
     "title": "Implementar Autenticação de Dois Fatores",
     "description": "Detalhes sobre a implementação de 2FA usando TOTP.",
     "status": "pending",
     "priority": "high",
-    "expiration_date": "2025-08-15T23:59:59Z",
+    "expirationDate": "2025-08-15T23:59:59Z",
     "attachment": {
         "filename": "especificacao_2fa.pdf",
         "url": "[https://storage.example.com/path/to/especificacao_2fa.pdf](https://storage.example.com/path/to/especificacao_2fa.pdf)",
         "filetype": "application/pdf"
     },
-    "creator_firebase_uid": "FIREBASE_UID_DO_CRIADOR",
+    "creatorFirebaseUid": "FIREBASE_UID_DO_CRIADOR",
     // "workspace_id_pg": 2, // Pode ser incluído se útil na resposta
-    "created_at": "2025-05-29T19:00:00Z", // Timestamp da criação
-    "last_updated_at": "2025-05-29T19:00:00Z" // Timestamp da última atualização
-    // O ID do documento do Firestore (firestoreDocId) será o ID principal da tarefa neste contexto.
-    // O handler CreateTaskHandler retorna o objeto completo, onde o ID pode ser inferido ou adicionado.
-    // Se o CreateTaskHandler retorna: map[string]string{"message": "Task created successfully", "firestoreDocId": firestoreDocID}
-    // então o exemplo de resposta seria:
-    // {
-    //     "message": "Task created successfully",
-    //     "firestoreDocId": "ID_GERADO_PELO_FIRESTORE"
-    // }
-    // Ajustei para refletir que o handler CreateTaskHandler retorna o objeto completo da tarefa do Firestore.
+    "createdAt": "2025-05-29T19:00:00Z", // Timestamp da criação
+    "lastUpdatedAt": "2025-05-29T19:00:00Z" // Timestamp da última atualização
 }
 ```
 
@@ -377,11 +368,11 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
         "description": "Detalhes sobre a implementação de 2FA usando TOTP.",
         "status": "pending",
         "priority": "high",
-        "expirationDate": "2025-08-15T23:59:59Z", // Chave corrigida para 'expirationDate'
+        "expirationDate": "2025-08-15T23:59:59Z",
         "attachment": { /* ... */ },
-        "creatorFirebaseUid": "FIREBASE_UID_DO_CRIADOR", // Chave corrigida
-        "createdAt": "2025-05-29T19:00:00Z",      // Chave corrigida
-        "lastUpdatedAt": "2025-05-29T19:00:00Z"   // Chave corrigida
+        "creatorFirebaseUid": "FIREBASE_UID_DO_CRIADOR",
+        "createdAt": "2025-05-29T19:00:00Z",
+        "lastUpdatedAt": "2025-05-29T19:00:00Z"
     }
     // ... outras tarefas
 ]
@@ -442,10 +433,138 @@ Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
 **Exemplo de Path:** `/workspace/2/task/delete/FIRESTORE_DOC_ID_DA_TAREFA`
 **Response (204 No Content)**
 
+## Funcionalidades de Inteligência Artificial (IA)
+(Requer Autenticação: `Authorization: Bearer <ID_TOKEN_DO_FIREBASE>`)
+
+### 1. Revisão de Código (Code Review)
+Envia um trecho de código para a IA e recebe uma revisão detalhada.
+```http
+POST /workspace/{workspace_id}/ai/code-review
+Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
+Content-Type: application/json
+```
+**Exemplo de Path:** `/workspace/1/ai/code-review`
+
+**Corpo da Requisição:**
+```json
+{
+    "code": "func exemplo(a int, b int) int {\n  return a + b\n}\n\nfunc main() {\n  soma := exemplo(5, 10)\n  fmt.Println(soma)\n}",
+    "language": "Go"
+}
+```
+**Response (200 OK):**
+```json
+{
+    "review": "Um code review detalhado fornecido pela IA, com sugestões de melhoria, performance, segurança, etc."
+}
+```
+**Possível Erro (400 Bad Request):**
+```json
+{
+    "error": "O campo 'code' é obrigatório para code review"
+    // ou {"error_ia": "Mensagem de erro específica da API de IA"}
+}
+```
+
+### 2. Resumo de Documento/Texto
+Envia um texto para a IA e recebe um resumo conciso.
+```http
+POST /workspace/{workspace_id}/ai/summarize-text
+Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
+Content-Type: application/json
+```
+**Exemplo de Path:** `/workspace/1/ai/summarize-text`
+
+**Corpo da Requisição:**
+```json
+{
+    "text": "O Projeto Integrador é um sistema abrangente que visa otimizar a gestão de tarefas e a colaboração em workspaces. Ele utiliza tecnologias modernas como Go para o backend, PostgreSQL para o banco de dados relacional e Cloud Firestore para funcionalidades em tempo real e armazenamento de detalhes de tarefas, garantindo escalabilidade e segurança. As funcionalidades incluem criação e gerenciamento de tarefas, administração de workspaces e um sistema robusto de autenticação de usuários via Firebase Authentication. O objetivo final é prover uma plataforma intuitiva e eficiente para equipes melhorarem sua produtividade e comunicação em projetos diversos, com o auxílio de um assistente de IA integrado."
+}
+```
+**Response (200 OK):**
+```json
+{
+    "summary": "Um resumo conciso do texto fornecido pela IA, identificando os pontos chave."
+}
+```
+**Possível Erro (400 Bad Request):**
+```json
+{
+    "error": "O campo 'text' é obrigatório para resumo"
+}
+```
+
+### 3. Geração de Ideias para Mapa Mental
+Envia um texto para a IA e recebe sugestões de tópicos e subtópicos para um mapa mental.
+```http
+POST /workspace/{workspace_id}/ai/mindmap-ideas
+Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
+Content-Type: application/json
+```
+**Exemplo de Path:** `/workspace/1/ai/mindmap-ideas`
+
+**Corpo da Requisição:**
+```json
+{
+    "text": "Estou planejando as férias de verão. Os principais pontos a considerar são: destino (praia ou montanha), orçamento total disponível, atividades para crianças, opções de transporte (carro ou avião) e duração da viagem (uma ou duas semanas)."
+}
+```
+**Response (200 OK):**
+```json
+{
+    "mind_map_ideas": "Uma lista hierárquica de tópicos e subtópicos para um mapa mental, fornecida pela IA (ex: - Destino\n  -- Praia\n  -- Montanha\n- Orçamento\n  -- ...)."
+}
+```
+**Possível Erro (400 Bad Request):**
+```json
+{
+    "error": "O campo 'text' é obrigatório para mapa mental"
+}
+```
+
+### 4. Assistente de Tarefas do Workspace
+Envia uma mensagem do usuário para a API de IA, que usa o contexto do workspace (buscado pelo backend Go) para fornecer sugestões ou assistência relacionada às tarefas.
+```http
+POST /workspace/{workspace_id}/ai/task-assistant
+Authorization: Bearer <ID_TOKEN_DO_FIREBASE>
+Content-Type: application/json
+```
+**Exemplo de Path:** `/workspace/8/ai/task-assistant` (onde `8` é o `workspace_id`)
+
+**Corpo da Requisição:**
+(O `workspace_id` já está no path, o corpo só precisa da mensagem do usuário)
+```json
+{
+    "user_message": "Quais são as tarefas mais urgentes que estão pendentes neste workspace?"
+}
+```
+Ou:
+```json
+{
+    "user_message": "Preciso de ideias para novas tarefas para o projeto 'Lançamento do App Mobile'."
+}
+```
+**Response (200 OK):**
+```json
+{
+    "suggestions": [
+        "Sugestão 1 da IA baseada no contexto do workspace e na mensagem do usuário.",
+        "Sugestão 2 da IA..."
+    ]
+}
+```
+**Possível Erro (400 Bad Request):**
+```json
+{
+    "error": "Mensagem do usuário é obrigatória"
+    // ou {"error_ia": "Mensagem de erro específica da API de IA"}
+}
+```
+
 ## Observações Importantes
 
 1.  Todas as rotas protegidas (a maioria delas) requerem o `ID Token` do Firebase (obtido no cliente após login) no header `Authorization` no formato `Bearer <ID_TOKEN_DO_FIREBASE>`.
-2.  O endpoint `/auth/finalize-login` é usado para processar este `ID Token` no backend.
+2.  O endpoint `/auth/finalize-login` é usado para processar este `ID Token` no backend e sincronizar o usuário com o banco de dados local.
 3.  Em caso de erro de autenticação/autorização, a resposta geralmente será um status HTTP 401 (Não Autorizado) ou 403 (Proibido).
 
 ## Códigos de Erro Comuns
