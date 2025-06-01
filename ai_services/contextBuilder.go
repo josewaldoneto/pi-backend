@@ -20,46 +20,55 @@ const tasksSubCollectionName = "tasks" // Nome da subcoleção de tarefas no Fir
 // formatando-as para o contexto da IA.
 // workspaceIDPg é o ID NUMÉRICO do workspace no PostgreSQL.
 func listTasksForAIContext(ctx context.Context, firestoreClient *firestore.Client, workspaceIDPg int64, limit int) ([]models.TarefaContext, error) {
-	// O ID do documento do workspace no Firestore é a string do ID do PG
 	workspaceDocIDForFirestore := strconv.FormatInt(workspaceIDPg, 10)
+	fullPathToTasks := fmt.Sprintf("workspaces/%s/%s", workspaceDocIDForFirestore, tasksSubCollectionName)
 
-	utilities.LogDebug(fmt.Sprintf("listTasksForAIContext: Buscando até %d tarefas do workspace Firestore path: workspaces/%s/%s", limit, workspaceDocIDForFirestore, tasksSubCollectionName))
+	utilities.LogDebug(fmt.Sprintf("listTasksForAIContext: Iniciando busca. Path: %s, OrderBy: 'last_updated_at' Desc, Limit: %d", fullPathToTasks, limit))
 
 	iter := firestoreClient.Collection("workspaces").Doc(workspaceDocIDForFirestore).Collection(tasksSubCollectionName).
-		OrderBy("LastUpdatedAt", firestore.Desc). // Ordenar por mais recentes. Certifique-se que o campo é "LastUpdatedAt" e não "lastUpdatedAt" no Firestore.
+		OrderBy("last_updated_at", firestore.Desc). // Certifique-se que este é o nome do campo no Firestore
 		Limit(limit).
 		Documents(ctx)
 	defer iter.Stop()
 
 	var tarefasCtx []models.TarefaContext
+	docCount := 0
 	for {
 		doc, err := iter.Next()
 		if err == iterator.Done {
-			utilities.LogDebug("listTasksForAIContext: Fim da iteração de tarefas do Firestore.")
+			utilities.LogDebug(fmt.Sprintf("listTasksForAIContext: Fim da iteração. Documentos processados: %d", docCount))
 			break
 		}
 		if err != nil {
-			utilities.LogError(err, fmt.Sprintf("listTasksForAIContext: Erro ao iterar tarefas do Firestore para workspace DocID %s", workspaceDocIDForFirestore))
+			// Este é um erro durante a iteração, ANTES de chegar ao fim.
+			utilities.LogError(err, fmt.Sprintf("listTasksForAIContext: Erro REAL ao iterar tarefas do Firestore para path %s", fullPathToTasks))
 			return nil, fmt.Errorf("erro ao buscar tarefas do Firestore: %w", err)
 		}
 
-		var taskDetail models.TaskDetailsFirestore // Sua struct completa de detalhes da tarefa no Firestore
-		if err := doc.DataTo(&taskDetail); err != nil {
-			// Use LogInfo ou LogWarn para erros de conversão de documentos individuais,
-			// para não parar todo o processo se uma tarefa estiver malformada.
-			utilities.LogInfo(fmt.Sprintf("listTasksForAIContext: Erro ao converter dados da tarefa Firestore para struct (Doc ID: %s, Firestore Path: %s): %v", doc.Ref.ID, doc.Ref.Path, err))
-			continue // Pula esta tarefa se houver erro de conversão
+		docCount++
+		utilities.LogDebug(fmt.Sprintf("listTasksForAIContext: Documento encontrado - ID: %s, Path: %s", doc.Ref.ID, doc.Ref.Path))
+
+		var taskDetail models.TaskDetailsFirestore
+		if errDataTo := doc.DataTo(&taskDetail); errDataTo != nil {
+			// Log detalhado do erro de conversão e dos dados brutos do documento se possível
+			rawData := doc.Data()
+			utilities.LogError(errDataTo, fmt.Sprintf("listTasksForAIContext: Erro ao converter dados da tarefa Firestore para struct (Doc ID: %s). Dados Brutos: %+v", doc.Ref.ID, rawData))
+			continue // Pula esta tarefa, mas loga o problema
 		}
 
-		// Mapeia os campos de TaskDetailsFirestore para TarefaContext
+		utilities.LogDebug(fmt.Sprintf("listTasksForAIContext: Tarefa convertida com sucesso - Título: %s, Status: %s", taskDetail.Title, taskDetail.Status))
 		tarefasCtx = append(tarefasCtx, models.TarefaContext{
 			Titulo:     taskDetail.Title,
 			Status:     taskDetail.Status,
+			Descricao:  taskDetail.Description, // Se necessário, pode ser uma descrição curta
 			Prioridade: taskDetail.Priority,
-			// Adicione mais campos aqui se TarefaContext tiver e eles forem relevantes
 		})
 	}
-	utilities.LogDebug(fmt.Sprintf("listTasksForAIContext: %d tarefas formatadas para o contexto da IA para o workspace ID PG %d.", len(tarefasCtx), workspaceIDPg))
+
+	if len(tarefasCtx) == 0 && docCount > 0 {
+		utilities.LogInfo(fmt.Sprintf("listTasksForAIContext: %d documentos foram iterados, mas a lista de TarefaContext está vazia. Verifique erros de DataTo.", docCount))
+	}
+	utilities.LogDebug(fmt.Sprintf("listTasksForAIContext: Finalizado. %d tarefas formatadas para o contexto da IA para o workspace ID PG %d.", len(tarefasCtx), workspaceIDPg))
 	return tarefasCtx, nil
 }
 

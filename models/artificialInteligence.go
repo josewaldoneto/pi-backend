@@ -17,6 +17,7 @@ type TarefaContext struct {
 	Titulo     string `json:"titulo"`
 	Status     string `json:"status,omitempty"`
 	Prioridade string `json:"prioridade,omitempty"`
+	Descricao  string `json:"descricao,omitempty"` // Descrição curta ou resumo da tarefa
 	// Adicione outros campos se forem relevantes para a IA, como "descricao_curta"
 }
 
@@ -26,8 +27,9 @@ type IAWorkspaceContext struct {
 	GrupoNome      string           `json:"grupo_nome"`
 	DescricaoGrupo string           `json:"descricao_grupo"`
 	Usuarios       []UsuarioContext `json:"usuarios"`
-	Tarefas        []TarefaContext  `json:"tarefas_recentes"`     // Lista de tarefas relevantes
-	MsgDoUsuario   string           `json:"msg_do_usuario_atual"` // O prompt/pergunta atual do usuário
+	Tarefas        []TarefaContext  `json:"tarefas_recentes"`
+	// Descricao      string           `json:"descricao"`            // Lista de tarefas relevantes
+	MsgDoUsuario string `json:"msg_do_usuario_atual"` // O prompt/pergunta atual do usuário
 }
 
 // historico de requisições à IA

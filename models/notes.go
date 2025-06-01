@@ -24,12 +24,12 @@ type TaskAttachment struct {
 
 // TaskDetailsFirestore representa os detalhes de uma tarefa armazenados no Firestore.
 type TaskDetailsFirestore struct {
-	Title          string          `json:"title" firestore:"title"`
-	Description    string          `json:"description" firestore:"description,omitempty"`
-	Status         string          `json:"status" firestore:"status"`               // ex: "pending", "in_progress", "completed"
-	Priority       string          `json:"priority" firestore:"priority,omitempty"` // ex: "low", "medium", "high"
-	ExpirationDate *time.Time      `json:"expiration_date,omitempty" firestore:"expiration_date,omitempty"`
-	Attachment     *TaskAttachment `json:"attachment,omitempty" firestore:"attachment,omitempty"`
+	Title          string     `json:"title" firestore:"title"`
+	Description    string     `json:"description" firestore:"description,omitempty"`
+	Status         string     `json:"status" firestore:"status"`               // ex: "pending", "in_progress", "completed"
+	Priority       string     `json:"priority" firestore:"priority,omitempty"` // ex: "low", "medium", "high"
+	ExpirationDate *time.Time `json:"expiration_date,omitempty" firestore:"expiration_date,omitempty"`
+	Attachment     string     `json:"attachment,omitempty" firestore:"attachment,omitempty"`
 
 	WorkspaceIDPg      int64     `json:"-" firestore:"workspace_id_pg"` // ID do workspace no PostgreSQL
 	CreatorFirebaseUID string    `json:"creator_firebase_uid" firestore:"creator_firebase_uid"`
@@ -39,19 +39,20 @@ type TaskDetailsFirestore struct {
 
 // Para escrita, você pode querer uma struct de input que não inclua campos gerados pelo servidor como CreatedAt
 type CreateTaskInput struct {
-	Title          string          `json:"title"`
-	Description    string          `json:"description"`
-	Status         string          `json:"status"`
-	Priority       string          `json:"priority"`
-	ExpirationDate *time.Time      `json:"expiration_date"`
-	Attachment     *TaskAttachment `json:"attachment"`
+	Title          string     `json:"title"`
+	Description    string     `json:"description"`
+	Status         string     `json:"status"`
+	Priority       string     `json:"priority"`
+	ExpirationDate *time.Time `json:"expiration_date"`
+
+	Attachment string `json:"attachment"`
 }
 
 type UpdateTaskInput struct {
-	Title          *string         `json:"title"` // Ponteiros para indicar quais campos atualizar
-	Description    *string         `json:"description"`
-	Status         *string         `json:"status"`
-	Priority       *string         `json:"priority"`
-	ExpirationDate *time.Time      `json:"expiration_date"`
-	Attachment     *TaskAttachment `json:"attachment"` // Para atualizar ou remover, pode ser complexo
+	Title          *string    `json:"title"` // Ponteiros para indicar quais campos atualizar
+	Description    *string    `json:"description"`
+	Status         *string    `json:"status"`
+	Priority       *string    `json:"priority"`
+	ExpirationDate *time.Time `json:"expiration_date"`
+	Attachment     *string    `json:"attachment"` // Para atualizar ou remover, pode ser complexo
 }
